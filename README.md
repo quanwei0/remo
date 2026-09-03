@@ -96,7 +96,7 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 | ReMo | `remo` | 1 … 5 (default 3) |
 | AdaReMo | `adaremo` (`--redundant-mode gate` for the ablation) | 1 … 5 |
 
-- Replicates are independent runs (`r1`, `r2`, …) launched concurrently against one server — never copied run directories.
+- Replicates: five independent runs per cell (`r1` … `r5`), launched concurrently against one server — never copied run directories.
 - `--freeze-after A`: consolidate on the first *A* tasks, then run with the memory read-only (learn-then-freeze, RQ3).
 - `--consolidator llm`: condense each stored lesson into one general line with one model call (default `append`).
 - Mean rounds = `len(rounds)`: a failed generation still spends a round.
@@ -116,7 +116,7 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 
 ```bash
 python benchmarks/formula/prepare_data.py --out data/formula_test.jsonl
-for r in 1 2 3; do
+for r in 1 2 3 4 5; do
   python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
          --base-url $URL --model GPT-OSS-120B --out runs/formula/adaremo_k3_r$r &
 done; wait
@@ -140,7 +140,7 @@ python benchmarks/appworld/run_appworld.py --mode adaremo --K 3 --split test_nor
   world with the critique injected.
 - Scoring is post hoc with AppWorld's unit tests (`appworld.evaluator.evaluate_task`, = `appworld evaluate <name> test_normal --root $APPWORLD_ROOT`):
   TGC = % tasks passing all assertions, SGC = % scenarios whose tasks all pass; `--eval-only` recomputes them.
-- Paper: `test_normal`, five replicates at K=3, three otherwise; learn-then-freeze `--freeze-after 90`.
+- Paper: `test_normal`, five replicates per cell; learn-then-freeze `--freeze-after 90`.
   Details: `benchmarks/appworld/README.md`.
 
 ## FinanceGym (env `remo-financegym`)
