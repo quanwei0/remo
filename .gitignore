@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+runs/
+*.log
+third_party/finance_harness/output/
+/data/
+benchmarks/formula/data/*.jsonl
+*.source.jsonl
+# paper result reports: kept locally, not published for now
+results/

@@ -1,0 +1,58 @@
+diff --git a/finance_harness/FinanceGym/financegym/corpus/extract_embed.py b/finance_harness/FinanceGym/financegym/corpus/extract_embed.py
+index 669fd0b..336d9a1 100644
+--- a/finance_harness/FinanceGym/financegym/corpus/extract_embed.py
++++ b/finance_harness/FinanceGym/financegym/corpus/extract_embed.py
+@@ -202,7 +202,13 @@ def embed_batch(
+   The canonical server is vLLM with Qwen3-Embedding-4B; any backend that
+   speaks the same JSON dialect can be substituted by setting ``EMBED_URL``.
+   """
+-  r = requests.post(url, json={"model": model, "input": texts}, timeout=timeout)
++  payload = {"model": model, "input": texts}
++  # vLLM: server-side truncation for over-length articles (otherwise one long
++  # article 400s the whole batch). Env-gated; unset keeps official behavior.
++  trunc = os.environ.get("EMBED_TRUNCATE_TOKENS")
++  if trunc:
++    payload["truncate_prompt_tokens"] = int(trunc)
++  r = requests.post(url, json=payload, timeout=timeout)
+   r.raise_for_status()
+   data = sorted(r.json()["data"], key=lambda x: x["index"])
+   return [d["embedding"] for d in data]
+diff --git a/finance_harness/FinanceGym/financegym/env/server.py b/finance_harness/FinanceGym/financegym/env/server.py
+index 0e2c808..d37cb13 100644
+--- a/finance_harness/FinanceGym/financegym/env/server.py
++++ b/finance_harness/FinanceGym/financegym/env/server.py
+@@ -256,12 +256,12 @@ def create_app(state):
+   app.state.financegym = state
+ 
+   @app.post("/search", response_model=SearchResponse)
+-  def _search(req):
++  def _search(req: SearchRequest):
+     emb = np.asarray(req.query_embedding, dtype=np.float32)
+     return search(state, emb, req.k, req.max_date)
+ 
+   @app.post("/fetch", response_model=FetchResponse)
+-  def _fetch(req):
++  def _fetch(req: FetchRequest):
+     doc = state.fetch_doc(req.doc_id)
+     if doc is None:
+       raise HTTPException(404, f"document {req.doc_id} not found")
+diff --git a/finance_harness/configs/providers.json b/finance_harness/configs/providers.json
+index 0a824b5..f1bea23 100644
+--- a/finance_harness/configs/providers.json
++++ b/finance_harness/configs/providers.json
+@@ -1,4 +1,12 @@
+ {
+   "_comment": "Backbone/reader profiles are defined in financeharness/providers/profiles.py (the source of truth): vllm + vllm-reader (OSS backbone + reader, over an OpenAI-compatible endpoint) and gemini. This file only selects the active default and may override or add profiles (file wins per-name); per-profile base_url is also overridable via FH_<NAME>_BASE_URL.",
+-  "default": "vllm"
+-}
++  "default": "vllm",
++  "profiles": {
++    "vllm": {
++      "model": "GPT-OSS-120B"
++    },
++    "vllm-reader": {
++      "model": "GPT-OSS-120B"
++    }
++  }
++}
+\ No newline at end of file

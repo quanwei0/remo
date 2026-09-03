@@ -1,0 +1,16 @@
+[project]
+name = "remo"
+version = "0.1.0"
+description = "ReMo / AdaReMo: budgeted dual-timescale self-improvement for LLM agents (refinement + memory)"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = ["openai>=2.48,<4", "tiktoken>=0.13"]
+
+[project.optional-dependencies]
+# Formula + AppWorld runners
+agents = ["appworld==0.1.3.post1"]          # appworld pins httpx<0.28 and pydantic<2 itself
+# FinanceGym runner (also: pip install -e third_party/finance_harness)
+financegym = ["httpx>=0.28", "faiss-cpu>=1.15", "numpy>=2.5", "pydantic>=2.13", "requests>=2.34"]
+
+[tool.setuptools.packages.find]
+include = ["remo*", "benchmarks*"]
