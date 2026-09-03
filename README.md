@@ -64,7 +64,12 @@ python -m unittest discover -s tests
 
 Run outputs (`runs/`) are not versioned.
 
-### Model servers
+### Models: local vLLM or an API
+
+Every runner talks to an OpenAI-compatible chat endpoint chosen by `--base-url` / `--model`; the key comes from
+`REMO_API_KEY` (default `EMPTY`, which is what a local vLLM expects). The paper's numbers use gpt-oss served locally.
+
+**Local (paper setting).**
 
 | script | serves | notes |
 |---|---|---|
@@ -74,7 +79,24 @@ Run outputs (`runs/`) are not versioned.
 | `scripts/servers/pit_server.sh` | FinanceGym point-in-time search, port 8889 | CPU node; ~450 GB RAM for the full corpus |
 
 Every runner takes `--base-url http://HOST:PORT/v1 --model GPT-OSS-120B` (or `GPT-OSS-20B`). AppWorld and Formula decode
-at temperature 0; FinanceGym uses the harness defaults. Runs are resumable: each run directory holds `episodes.jsonl`
+at temperature 0; FinanceGym uses the harness defaults.
+
+**API (any OpenAI-compatible provider).** Set the key and point the runner at the provider:
+
+```bash
+export REMO_API_KEY=sk-...
+python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
+       --base-url https://api.openai.com/v1 --model gpt-4o --out runs/formula/gpt4o_adaremo_k3
+```
+
+The same flags work for `run_appworld.py`. This covers OpenAI, and any provider with an OpenAI-compatible endpoint
+(Anthropic's `https://api.anthropic.com/v1/`, DeepSeek, Together, OpenRouter, ...). Two things differ for FinanceGym: the
+model must support function calling (FinanceHarness retrieves through tool calls), and the harness reads the backbone /
+page-reader key from its provider profile rather than from `REMO_API_KEY` — in
+`third_party/finance_harness/configs/providers.json` add `"api_key_env": "OPENAI_API_KEY", "api_key_literal": null` to the
+`vllm` profile (file fields override the code defaults) and export that variable. Our critic and consolidator still use
+`REMO_API_KEY`. Mind the cost: one AppWorld task is roughly 200k prompt tokens per round, so a full `test_normal` replicate is
+40–50M input tokens; FinanceGym is similar; Formula is small. Runs are resumable: each run directory holds `episodes.jsonl`
 (one record per task: rounds, verdicts, gate, store decision), `playbook.txt`, `policy_state.json` and, when finished,
 `final_results.json`.
 
