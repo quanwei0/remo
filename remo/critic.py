@@ -1,40 +1,14 @@
-"""Shared critic output contract. Benchmark adapters own the domain part of the prompt (what
-counts as an error on Formula / FinanceGym / AppWorld); this module owns the decision fields and
-their parsing, so every adapter feeds the policy the same Reflection."""
+"""Critic output parsing shared by the benchmark adapters. Each adapter ships the critic prompt used
+for the paper's runs and turns the reply into the one Reflection the policy understands."""
 import json
 import re
+from typing import Callable
 
 from .interfaces import Reflection
 
-REMO_FIELDS = """Output ONLY a JSON object:
-{{
-  "checks": "your independent verification work",
-  "verdict": "no_errors" or "errors_found",
-  "critique": "if errors_found: exactly what is wrong and the concrete fix; if no_errors: one sentence on why it is trustworthy",
-  "lesson": "the single reusable lesson, stated generally"
-}}"""
-
-ADAREMO_FIELDS = """Then make two more decisions:
-- refine (only matters if errors_found): true ONLY if you can state ONE concrete, actionable correction the solver can apply in a retry. If the failure comes from missing information, or a previous reviewer already gave the same correction and the retry still failed, answer false: a retry would be a lottery.
-- store (only matters if no_errors): true ONLY if ALL hold: (a) the lesson is backed by verified evidence in THIS attempt, not speculation; (b) it generalizes beyond this single task; (c) the CURRENT MEMORY below does NOT already contain an equivalent entry. If an equivalent entry exists, answer false and cite its id in novelty_reason.
-
-Output ONLY a JSON object:
-{{
-  "checks": "your independent verification work",
-  "verdict": "no_errors" or "errors_found",
-  "critique": "if errors_found: exactly what is wrong and the concrete fix; if no_errors: one sentence on why it is trustworthy",
-  "refine": true or false,
-  "store": true or false,
-  "novelty_reason": "why the lesson is (not) already covered by the memory; cite the entry id like [les-00012] if covered",
-  "lesson": "the single reusable lesson, stated generally"
-}}"""
-
-
-def fields_spec(adaptive: bool) -> str:
-    return ADAREMO_FIELDS if adaptive else REMO_FIELDS
-
 
 def extract_json(text: str) -> dict:
+    """Greedy locator (Formula / FinanceGym runs): first "{" to last "}", or {}."""
     m = re.search(r"\{.*\}", text or "", re.S)
     if not m:
         return {}
@@ -45,6 +19,52 @@ def extract_json(text: str) -> dict:
         return {}
 
 
+def _balanced_objects(text: str) -> list[str]:
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "{":
+            depth, start, i = 1, i, i + 1
+            while i < len(text) and depth > 0:
+                c = text[i]
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                elif c == '"':
+                    i += 1
+                    while i < len(text) and text[i] != '"':
+                        if text[i] == "\\":
+                            i += 1
+                        i += 1
+                i += 1
+            if depth == 0:
+                out.append(text[start:i])
+        else:
+            i += 1
+    return out
+
+
+def extract_json_balanced(text: str):
+    """Locator of the AppWorld critic and of the consolidator replies: the whole text, then each
+    ```json fence, then each balanced {...} block, the first that parses (any JSON type) or None."""
+    text = text or ""
+    try:
+        return json.loads(text.strip())
+    except json.JSONDecodeError:
+        pass
+    for m in re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE):
+        try:
+            return json.loads(m.strip())
+        except json.JSONDecodeError:
+            continue
+    for cand in _balanced_objects(text):
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def _bool(v, default: bool) -> bool:
     if isinstance(v, bool):
         return v
@@ -53,17 +73,27 @@ def _bool(v, default: bool) -> bool:
     return default
 
 
-def parse_reflection(text: str, adaptive: bool) -> Reflection:
-    """Conservative defaults on unparseable output: refine=True (behave like ReMo), store=False."""
-    d = extract_json(text)
-    v = str(d.get("verdict", "")).strip().lower()
-    if v not in ("no_errors", "errors_found"):
-        v = "no_errors" if '"no_errors"' in (text or "") else "errors_found"
-    refl = Reflection(
-        verdict="correct" if v == "no_errors" else "incorrect",
-        critique=str(d.get("critique", "") or (text or "")[:2000]),
-        lesson=str(d.get("lesson", "") or d.get("key_insight", "")),
-        parsed=bool(d), raw=text or "")
+def parse_reflection(text: str, adaptive: bool, *, verdict_key: str = "verdict",
+                     lesson_keys: tuple[str, ...] = ("lesson", "key_insight"), no_errors: str = "no_errors",
+                     errors: str = "errors_found", extract: Callable[[str], object] = extract_json) -> Reflection:
+    """Reply text -> Reflection. verdict: the parsed value when it is one of the two literals; any other
+    present value counts as errors; when absent, `no_errors` iff its quoted literal occurs in the text.
+    critique defaults to the first 2000 chars of the reply, lesson to "" (first non-empty of lesson_keys).
+    Adaptive fields default to the conservative side: refine=True (retry as ReMo would), store=False."""
+    text = text or ""
+    d = extract(text)
+    d = d if isinstance(d, dict) else {}
+    v = d.get(verdict_key)
+    if v in (no_errors, errors):
+        pass
+    elif v:
+        v = errors
+    else:
+        v = no_errors if f'"{no_errors}"' in text else errors
+    refl = Reflection(verdict="correct" if v == no_errors else "incorrect",
+                      critique=str(d.get("critique", text[:2000])),
+                      lesson=next((str(d[k]) for k in lesson_keys if d.get(k)), ""),
+                      parsed=bool(d), raw=text)
     if adaptive:
         refl.refine = _bool(d.get("refine"), True)
         refl.store = _bool(d.get("store"), False)

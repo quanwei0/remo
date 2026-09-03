@@ -1,10 +1,10 @@
 """Formula data: row schema, question parsing, row hashing against the manifest.
 
 A row is {"context": "<instruction incl. the formula> Question: \"...\". Answer:", "target": "15.0"} (FinLoRA
-Formula test set, 200 rows). The solver and the critic see only the question text (between "Question: " and
-". Answer:") plus a fixed formatting instruction; the target stays outside the loop and is used post hoc by
-scoring.py. The rows are not redistributed: data/formula_test.sha256 lists one SHA-256 per row in evaluation
-order and prepare_data.py rebuilds the file from the public source.
+Formula test set, 200 rows). The loop sees the question text (between "Question: " and ". Answer:") followed by the
+fixed answer-format sentence, exactly as the paper's runs built it; the target stays outside the loop and is used
+post hoc by scoring.py. The rows are not redistributed: data/formula_test.sha256 lists one SHA-256 per row in
+evaluation order and prepare_data.py rebuilds the file from the public source.
 """
 import hashlib
 import json
@@ -16,25 +16,22 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 MANIFEST_PATH = os.path.join(HERE, "data", "formula_test.sha256")
 DEFAULT_DATA_PATH = os.environ.get("REMO_FORMULA_DATA", os.path.join(REPO, "data", "formula_test.jsonl"))
 
-ANSWER_FORMAT = ("Your answer should be a plain floating point number, round to the nearest hundredth if "
-                 "necessary. Do the necessary conversions, for example 5 million should be 5000000.0.")
-_QUOTES = "\"'“”‘’"
+ANSWER_FORMAT = (" Your answer should be a plain floating point number, round to the nearest hundredth if "
+                 "necessary. Do the necessary conversions, for example 5 million should be 5000000.0. ")
 _FORMULA_NAME = re.compile(r"^\s*Use formula (.+?) to answer the question", re.S)
 
 
 # -- parsing --------------------------------------------------------------------------------------
 def parse_question(context: str) -> str:
-    """Question text between "Question: " and ". Answer:", surrounding quotes removed, followed by the
-    fixed answer-format instruction. Without the markers the whole context is used."""
-    q = context or ""
-    if "Question: " in q:
-        q = q.split("Question: ", 1)[1]
-    if ". Answer:" in q:
-        q = q.rsplit(". Answer:", 1)[0]
-    q = q.strip()
-    if len(q) >= 2 and q[0] in _QUOTES and q[-1] in _QUOTES:
-        q = q[1:-1].strip()
-    return f"{q} {ANSWER_FORMAT}"
+    """The question text of the paper's runs: between "Question: " and the first ". Answer:", stripped,
+    one pair of straight double quotes removed, followed by the fixed answer-format sentence (which ends
+    with a space). Without both markers the whole context is the question."""
+    if "Question: " in context and ". Answer:" in context:
+        q = context.split("Question: ", 1)[1].split(". Answer:")[0].strip()
+        if q.startswith('"') and q.endswith('"'):
+            q = q[1:-1]
+        return q + ANSWER_FORMAT
+    return context
 
 
 def formula_name(context: str) -> str:
@@ -45,8 +42,9 @@ def formula_name(context: str) -> str:
 
 
 def make_task(index: int, row: dict) -> dict:
-    """What the loop sees: no target."""
-    return {"task_index": index, "question": parse_question(row["context"]), "formula": formula_name(row["context"])}
+    """What the loop sees: the question and an (always empty) context slot for the solver prompt; no target."""
+    return {"task_index": index, "question": parse_question(row["context"]), "context": "",
+            "formula": formula_name(row["context"])}
 
 
 # -- rows -----------------------------------------------------------------------------------------

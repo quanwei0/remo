@@ -1,16 +1,16 @@
-"""Zero-rollout critic calibration: run the FinanceGym critic (the exact prompt run_financegym.py
-uses — common.build_critic_prompt + remo.critic.fields_spec) over FINISHED reports, without any
-solver rollout. Measures the round-1 flag rate (errors_found), the refine rate among flagged, the
-store rate and parse health before any retry GPU-time is spent. Prompt iteration tool: a wide-net
-prompt flagged 99% of baseline reports; the severe-only five checks brought it to ~56%.
+"""Zero-rollout critic calibration: run the FinanceGym critic (the exact prompt, call parameters and
+parsing of run_financegym.py — common.FinanceGymCritic) over FINISHED reports, without any solver
+rollout. Measures the round-1 flag rate (errors_found), the refine rate among flagged, the store rate
+and parse health before any retry GPU-time is spent. Prompt iteration tool: a wide-net prompt flagged
+99% of baseline reports; the severe-only five checks brought it to ~56%.
 
 Inputs (one of):
   --run-dir RUN_DIR    this adapter's episodes.jsonl (final_answer/queries/docs_retrieved/citations)
   --trajs-dir DIR      a directory of per-task JSON files ({"record": {...}} or the record itself)
-Optional --playbook playbook.txt is shown to the critic as CURRENT MEMORY (adaremo only; default empty).
+Optional --playbook playbook.txt is shown to the critic as the prior playbook (default empty).
 Resumable: task_ids already in --out are skipped.
 
-Usage: calibrate.py --mode adaremo (--run-dir D | --trajs-dir D) --out cal.jsonl [--base-url URL --model NAME --conc 8 --limit N]
+Usage: calibrate.py (--run-dir D | --trajs-dir D) --out cal.jsonl [--base-url URL --model NAME --conc 8 --limit N]
 """
 import argparse
 import asyncio
@@ -23,8 +23,9 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from benchmarks.financegym.common import (DEFAULT_MODEL, MIN_DOCS, CRITIC_MEMORY_CAP_CHARS, FinanceGymCritic,  # noqa: E402
-                                          read_episodes, trajectory_from_record)
+from benchmarks.financegym.common import (CRITIC_MAX_TOKENS, DEFAULT_MODEL, INJECT_CAP_CHARS, MIN_DOCS,  # noqa: E402
+                                          PLAYBOOK_PREFIX, FinanceGymCritic, cited_entry, read_episodes,
+                                          trajectory_from_record)
 from remo import Playbook                                                          # noqa: E402
 
 
@@ -53,9 +54,9 @@ async def calibrate(recs, critic: FinanceGymCritic, out_path: str, conc: int, me
         traj = trajectory_from_record(rec, min_docs)
         async with sem:
             refl = await critic.reflect(task, traj, memory_text, None, 1, 1)
-        row = {"task_id": tid, "parsed": refl.parsed, "verdict": refl.verdict, "refine": refl.refine,
-               "store": refl.store, "lesson": refl.lesson[:300], "critique_len": len(refl.critique),
-               "cited_id": refl.cited_id or Playbook.find_cited_id(refl.novelty_reason),
+        row = {"task_id": tid, "parsed": refl.parsed, "failed": refl.failed, "verdict": refl.verdict,
+               "refine": refl.refine, "store": refl.store, "lesson": refl.lesson[:300],
+               "critique_len": len(refl.critique), "cited_id": cited_entry(refl),
                "docs_retrieved": traj.meta["docs_retrieved"], "report_chars": len(traj.answer),
                "completed": traj.completed}
         async with lock:
@@ -89,29 +90,27 @@ def main(argv=None) -> int:
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--run-dir")
     src.add_argument("--trajs-dir")
-    p.add_argument("--mode", required=True, choices=["remo", "adaremo"])
     p.add_argument("--out", required=True)
-    p.add_argument("--playbook", default=None, help="playbook.txt shown as CURRENT MEMORY (adaremo)")
+    p.add_argument("--playbook", default=None, help="playbook.txt shown to the critic as the prior playbook")
     p.add_argument("--base-url", default=os.environ.get("FH_VLLM_BASE_URL") or os.environ.get("REMO_BASE_URL")
                    or "http://localhost:8125/v1")
     p.add_argument("--model", default=os.environ.get("FIN_MODEL", DEFAULT_MODEL))
     p.add_argument("--conc", type=int, default=int(os.environ.get("CAL_CONC", "8")))
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--min-docs", type=int, default=MIN_DOCS)
-    p.add_argument("--critic-max-tokens", type=int, default=2048)
-    p.add_argument("--critic-temperature", type=float, default=0.0)
-    p.add_argument("--critic-memory-cap", type=int, default=CRITIC_MEMORY_CAP_CHARS)
+    p.add_argument("--critic-max-tokens", type=int, default=CRITIC_MAX_TOKENS)
+    p.add_argument("--inject-cap", type=int, default=INJECT_CAP_CHARS,
+                   help="the playbook is rendered under the driver's injection cap before the critic's own cap")
     a = p.parse_args(argv)
 
     import openai
     recs = load_records(a.run_dir, a.trajs_dir)
     if a.limit:
         recs = recs[:a.limit]
-    memory_text = Playbook.load(a.playbook, prefix="fin").render() if a.playbook else ""
+    memory_text = Playbook.load(a.playbook, prefix=PLAYBOOK_PREFIX).render(a.inject_cap) if a.playbook else ""
     client = openai.AsyncOpenAI(api_key=os.environ.get("REMO_API_KEY", "EMPTY"), base_url=a.base_url,
                                 timeout=600.0, max_retries=2)
-    critic = FinanceGymCritic(client, a.model, adaptive=(a.mode == "adaremo"), max_tokens=a.critic_max_tokens,
-                              temperature=a.critic_temperature, memory_cap=a.critic_memory_cap)
+    critic = FinanceGymCritic(client, a.model, max_tokens=a.critic_max_tokens)
     asyncio.run(calibrate(recs, critic, a.out, a.conc, memory_text, a.min_docs))
     summarize(a.out)
     print("ALL DONE", flush=True)

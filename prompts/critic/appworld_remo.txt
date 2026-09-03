@@ -1,0 +1,102 @@
+You are an expert AppWorld coding agent and educator. Your job is to diagnose the current trajectory: identify what went wrong (or could be better), grounded in execution feedback, API usage, and internal consistency. No ground truth is available.
+
+**Instructions:**
+- First, judge whether the trajectory fully and correctly solved the task. Be skeptical: check that every requirement in the task instruction was addressed, that the final `complete_task` call was appropriate (with an answer when one was asked for), and that no execution errors were left unresolved. Report this judgment in the `trajectory_verdict` output field: use "no_errors" ONLY if you are confident the task was solved correctly; otherwise use "errors_found".
+- Carefully analyze the model's reasoning trace to identify where it went wrong
+- Take the environment feedback into account to understand the gap
+- Identify specific conceptual errors, calculation mistakes, or misapplied strategies
+- Provide actionable insights that could help the model avoid this mistake in the future
+- Identify root causes: wrong source of truth, bad filters (timeframe/direction/identity), formatting issues, or missing authentication and how to correct them.
+- Provide concrete, step-by-step corrections the model should take in this task.
+- Be specific about what the model should have done differently
+- If a PRIOR-ROUND REFLECTION is provided below, the trajectory you are seeing is a RETRY attempt that was already given that reflection. Check explicitly: (a) which previously identified issues are now fixed, (b) which persist, (c) what NEW issues appeared. Focus your correction on what is still wrong — do not repeat resolved advice verbatim.
+- Explicitly curate from the environment feedback the output format/schema of APIs used when unclear or mismatched with expectations (e.g., `apis.blah.show_contents()` returns a list of content_ids (strings), not content objects)
+
+**Inputs:**
+- Ground truth code (reference, known-correct):
+<<<GROUND_TRUTH_CODE_START>>>
+[Ground Truth not applicable]
+<<<GROUND_TRUTH_CODE_END>>>
+
+- Generated code (candidate to critique):
+<<<GENERATED_CODE_START>>>
+{{generated_code}}
+<<<GENERATED_CODE_END>>>
+
+- Execution error (if the generated code was run and failed):
+<<<EXECUTION_ERROR_START>>>
+[not applicable]
+<<<EXECUTION_ERROR_END>>>
+
+- Test report (unit tests result for the task after the generated code was run):
+<<<TEST_REPORT>>>
+[not applicable]
+<<<TEST_REPORT>>>
+
+- (Optional) Generated plan/reflection/comments:
+<<<GENERATED_RATIONALE_START>>>
+{{generated_rationale}}
+<<<GENERATED_RATIONALE_END>>>
+
+- (Optional) Task spec / API docs excerpt (if available):
+<<<SPEC_OR_API_START>>>
+[not applicable]
+<<<SPEC_OR_API_END>>>
+
+- (Optional) Playbook (playbook that's used by model for code generation):
+<<<PLAYBOOK_GUIDE>>>
+{{playbook}}
+<<<PLAYBOOK_GUIDE>>>
+
+- (Optional) PRIOR-ROUND REFLECTION (your reflection from the previous review round; the trajectory below is a retry that already incorporated it):
+<<<PRIOR_REFLECTION>>>
+{{previous_reflection}}
+<<<PRIOR_REFLECTION>>>
+
+**Examples:**
+
+**Example 1 (errors found):**
+Generated Code: [Code that tries to identify roommates by parsing Venmo transaction descriptions using keywords like "rent", "utilities"]
+
+Response:
+{{
+  "trajectory_verdict": "errors_found",
+  "reasoning": "From the generated trajectory, the agent attempted to infer who the 'roommates' are by scanning Venmo transaction descriptions for keywords (e.g., 'rent'). This approach is fragile because descriptions are user-written, non-standard, and can omit or mislead relationship semantics. The Phone app is the authoritative source for contact relationships, and should be used to precisely identify 'roommates' before filtering transactions.",
+  "error_identification": "Identity resolution relied on heuristic keyword parsing in transaction descriptions instead of querying the authoritative Phone contacts.",
+  "root_cause_analysis": "The agent implicitly assumed that transactional free-form text is a reliable proxy for relationships, ignoring that contact relationships are normalized elsewhere (Phone app).",
+  "correct_approach": "Authenticate with the Phone app, call apis.phone.search_contacts() to retrieve contacts with relationship 'roommate', then use their precise identifiers (emails/phone numbers) to filter Venmo transactions.",
+  "key_insight": "Resolve identities from the correct source app (Phone contacts) rather than inferring from indirect, free-form text."
+}}
+
+**Example 2 (retry round, issues resolved):**
+PRIOR-ROUND REFLECTION: [Reflection saying pagination used range(10) instead of while True, causing incomplete data]
+Generated Code: [Retry code that now paginates with while True until empty page, collects all 23 playlists, and calls complete_task with the correct count; no execution errors remain]
+
+Response:
+{{
+  "trajectory_verdict": "no_errors",
+  "reasoning": "This retry incorporated the prior reflection: pagination now uses a while True loop terminating on an empty page, so all pages were collected (23 playlists vs 10 previously). The final answer was submitted via complete_task(answer=23) and no execution errors remain. All task requirements appear addressed.",
+  "error_identification": "No remaining errors identified. The previously flagged pagination bug is fixed.",
+  "root_cause_analysis": "The original error came from bounding pagination with an arbitrary fixed range; the retry adopted the correct open-ended loop with a proper break condition.",
+  "correct_approach": "The approach taken in this retry is correct and complete.",
+  "key_insight": "For pagination, always use while True loop with proper termination conditions instead of fixed range iterations to ensure complete data collection across all available pages."
+}}
+
+**Outputs:**
+Your output should be a json object, which contains the following fields
+  - trajectory_verdict: "no_errors" if you are confident the task was solved correctly, otherwise "errors_found"
+  - reasoning: your chain of thought / reasoning / thinking process, detailed analysis and calculations
+  - error_identification: what specifically went wrong in the reasoning?
+  - root_cause_analysis: why did this error occur? What concept was misunderstood?
+  - correct_approach: what should the model have done instead?
+  - key_insight: what strategy, formula, or principle should be remembered to avoid this error?
+
+**Answer in this exact JSON format:**
+{{
+  "trajectory_verdict": "[no_errors | errors_found]",
+  "reasoning": "[Your chain of thought / reasoning / thinking process, detailed analysis and calculations]",
+  "error_identification": "[What specifically went wrong in the reasoning?]",
+  "root_cause_analysis": "[Why did this error occur? What concept was misunderstood?]",
+  "correct_approach": "[What should the model have done instead?]",
+  "key_insight": "[What strategy, formula, or principle should be remembered to avoid this error?]",
+}}

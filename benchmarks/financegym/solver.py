@@ -15,7 +15,7 @@ import faulthandler
 import sys
 import time
 
-from .common import EMBED_MODEL, FH_ROOT, MIN_DOCS, build_question, record_view
+from .common import EMBED_MODEL, FH_ROOT, MIN_DOCS, build_question, make_trajectory
 from remo.interfaces import Trajectory
 
 faulthandler.enable()
@@ -52,8 +52,9 @@ class FinanceGymSolver:
     """One FinanceGymBackend per attempt (pinned to the task cutoff). `solve` is a coroutine
     (the harness is async); it retries an attempt whose final report is EMPTY up to
     `max_empty_retries` times (gpt-oss sometimes ends the turn with an empty final message).
-    completed = report non-empty AND docs_retrieved >= min_docs. `plain=True` (--mode baseline)
-    sends the bare question + PIT sentence exactly as the leaderboard baseline did."""
+    A harness exception or timeout is an attempt with an empty report (termination = the error),
+    as in the paper's runs. `plain=True` (--mode baseline) sends the bare question + PIT sentence
+    exactly as the leaderboard baseline did."""
 
     def __init__(self, pit_url: str, embed_url: str, embed_model: str = EMBED_MODEL, timeout_s: float = 120.0,
                  task_timeout_s: float = 3660.0, max_empty_retries: int = 3, min_docs: int = MIN_DOCS,
@@ -104,11 +105,8 @@ class FinanceGymSolver:
                 self.log(f"[retry-empty] {task['task_id']} attempt {attempt} term={rec['termination']} "
                          f"steps={rec['steps']} docs={rec['docs_retrieved']}")
         rec = attempts[-1]
-        completed = bool(rec["report"].strip()) and rec["docs_retrieved"] >= self.min_docs
-        meta = {"task_id": task["task_id"], "cutoff": task["cutoff"],
-                "elapsed_s": round(sum(a["elapsed_s"] for a in attempts), 1),
-                "docs_retrieved": rec["docs_retrieved"], "steps": rec["steps"], "termination": rec["termination"],
-                "citations": rec["citations"], "queries": rec["queries"], "empty_attempts": len(attempts) - 1,
-                "question_chars": len(question), "memory_chars": len(memory_text), "report_chars": len(rec["report"])}
-        return Trajectory(text=record_view(rec["report"], rec["queries"], rec["docs_retrieved"], rec["citations"]),
-                          answer=rec["report"], completed=completed, meta=meta)
+        return make_trajectory(rec["report"], rec["queries"], rec["docs_retrieved"], rec["citations"], self.min_docs,
+                               task_id=task["task_id"], cutoff=task["cutoff"],
+                               elapsed_s=round(sum(a["elapsed_s"] for a in attempts), 1),
+                               steps=rec["steps"], termination=rec["termination"], empty_attempts=len(attempts) - 1,
+                               question_chars=len(question), memory_chars=len(memory_text), report_chars=len(rec["report"]))

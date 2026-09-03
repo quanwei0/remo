@@ -15,7 +15,8 @@ class RemoConfig:
                     freeze_rho*freeze_w touched memory (stored or reinforced) consolidation is frozen;
                     every probe_p tasks one probe episode may unfreeze it
     inject_cap_chars
-                    cap on the memory text prepended to the solver (None = whole playbook)
+                    cap on the memory text prepended to the solver (None = whole playbook; the
+                    paper's runs: None on Formula and AppWorld, 30000 on FinanceGym)
     use_memory      False disables the inter-task memory entirely; with K=1 this is plain ReAct,
                     with K>1 refinement only. mode="remo", use_memory=True, K=1 is memory only.
     """

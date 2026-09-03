@@ -21,15 +21,16 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from benchmarks.formula.critic import CRITIC_MEMORY_CAP_CHARS, FormulaCritic, LLMConsolidator      # noqa: E402
+from benchmarks.formula.consolidator import (CURATOR_MAX_TOKENS, TOKEN_BUDGET, AppendConsolidator,    # noqa: E402
+                                             CuratorConsolidator)
+from benchmarks.formula.critic import CRITIC_MAX_TOKENS, FormulaCritic                               # noqa: E402
 from benchmarks.formula.data import (DEFAULT_DATA_PATH, MANIFEST_PATH, check_against_manifest,     # noqa: E402
                                      file_sha256, load_rows, make_task, read_manifest)
 from benchmarks.formula.scoring import summary_line, write_final_results                          # noqa: E402
-from benchmarks.formula.solver import DEFAULT_BASE_URL, DEFAULT_MODEL, ChatLLM, FormulaSolver    # noqa: E402
-from remo import Playbook, ReMoAgent, RemoConfig                                                  # noqa: E402
-from remo.agent import AppendConsolidator                                                          # noqa: E402
+from benchmarks.formula.solver import (DEFAULT_BASE_URL, DEFAULT_MODEL, SOLVER_MAX_TOKENS, ChatLLM,   # noqa: E402
+                                       FormulaSolver)
+from remo import ReMoAgent, RemoConfig, SectionedPlaybook                                         # noqa: E402
 
-PLAYBOOK_PREFIX = "calc"
 MODES = ("react", "refine", "memory", "remo", "adaremo")
 LOCKED = ("mode", "K", "redundant_mode", "freeze_after", "consolidator", "model", "data_sha256")   # fixed for a run dir
 
@@ -54,18 +55,18 @@ def config_for(mode: str, K: int, **knobs) -> RemoConfig:
 
 
 class NoWriteConsolidator:
-    def consolidate(self, playbook, lesson, task, traj) -> str:
+    def consolidate(self, playbook, episode, task, traj) -> str:
         return ""
 
 
 class ReadOnlyPlaybook:
-    """View of a Playbook for the frozen phase of --freeze-after: reads pass through, writes are refused."""
+    """View of the playbook for the frozen phase of --freeze-after: reads pass through, writes are refused."""
 
-    def __init__(self, playbook: Playbook):
+    def __init__(self, playbook: SectionedPlaybook):
         self._pb = playbook
 
-    def add(self, text: str) -> str:
-        return ""
+    def apply_add_ops(self, ops) -> list[str]:
+        return []
 
     def reinforce(self, eid: str) -> bool:
         return False
@@ -78,15 +79,14 @@ class ReadOnlyPlaybook:
 
 
 class FormulaAgent(ReMoAgent):
-    """remo.ReMoAgent plus (a) per-round answers / usage / full replies persisted with the episode and (b) the
-    read-only memory phase of --freeze-after (task_index >= A: the playbook is read but never written, and the
-    policy's saturation state stays as it was after task A-1; the record says store_decision="skipped_readonly")."""
+    """remo.ReMoAgent plus (a) per-round answers / usage / full replies persisted with the episode, the final
+    answer taken from the last round whose solver and critic both ran (as the paper's runs did), the curator's
+    outcome (a failed curator call or an unusable reply -> store_decision "curator_error") and (b) the read-only
+    memory phase of --freeze-after (task_index >= A: the playbook is read but never written, no curator call, and
+    the policy's saturation state stays as it was after task A-1; the record says store_decision="skipped_readonly")."""
 
     def __init__(self, cfg, solver, critic, playbook=None, consolidator=None, run_dir=None, freeze_after=None):
         super().__init__(cfg, solver, critic, playbook, consolidator, run_dir)
-        # ReMoAgent tests `playbook or Playbook()`; an EMPTY caller-supplied playbook is falsy (it has __len__) and is
-        # replaced by a default-prefix one, and _load() then reuses that prefix. Keep the "calc" prefix either way.
-        self.playbook.prefix = (playbook or Playbook(prefix=PLAYBOOK_PREFIX)).prefix if playbook is not None else PLAYBOOK_PREFIX
         self.base_consolidator = self.consolidator
         self.freeze_after = freeze_after
         self._readonly, self._task, self._policy_snap = False, None, self.policy.state()
@@ -107,6 +107,7 @@ class FormulaAgent(ReMoAgent):
 
     def _save(self, rec: dict) -> None:
         s_hist, c_hist = self.solver.drain(), self.critic.drain()
+        answers = []
         for i, rd in enumerate(rec["rounds"]):
             s = s_hist[i] if i < len(s_hist) else {}
             c = c_hist[i] if i < len(c_hist) else {}
@@ -116,10 +117,16 @@ class FormulaAgent(ReMoAgent):
                            "prompt_tokens": int(s.get("prompt_tokens", 0)) + int(c.get("prompt_tokens", 0)),
                            "completion_tokens": int(s.get("completion_tokens", 0)) + int(c.get("completion_tokens", 0)),
                            "critic_elapsed_s": c.get("elapsed_s")}
+            if not s.get("error") and not rd.get("failed"):
+                answers.append(rd["answer"])
+        rec["final_answer"] = answers[-1] if answers else ""
         cu = self.base_consolidator.drain() if hasattr(self.base_consolidator, "drain") else []
-        rec["consolidator_usage"] = {"calls": sum(int(x.get("calls", 0)) for x in cu),
-                                     "prompt_tokens": sum(int(x.get("prompt_tokens", 0)) for x in cu),
-                                     "completion_tokens": sum(int(x.get("completion_tokens", 0)) for x in cu)}
+        rec["consolidator"] = {"calls": sum(int(x.get("calls", 0)) for x in cu),
+                               "prompt_tokens": sum(int(x.get("prompt_tokens", 0)) for x in cu),
+                               "completion_tokens": sum(int(x.get("completion_tokens", 0)) for x in cu),
+                               "outcome": cu[-1].get("outcome", "") if cu else ""}
+        if rec["store_decision"] == "stored" and rec["consolidator"]["outcome"].endswith("_error"):
+            rec["store_decision"] = "curator_error"
         rec["formula"] = (self._task or {}).get("formula", "")
         rec["memory_readonly"] = self._readonly
         if self._readonly:
@@ -130,7 +137,7 @@ class FormulaAgent(ReMoAgent):
         super()._save(rec)
         with open(os.path.join(self.run_dir, "trajs.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"task_index": rec["task_index"],
-                                "rounds": [{"round": i + 1, "critique_in": s.get("critique_in", ""), "answer": s.get("answer", ""),
+                                "rounds": [{"round": i + 1, "reflection": s.get("reflection", ""), "answer": s.get("answer", ""),
                                             "text": s.get("text", "")} for i, s in enumerate(s_hist)]}, default=str) + "\n")
 
 
@@ -147,16 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="AdaReMo: what happens to a lesson the critic judges already covered")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="consolidate on the first A questions, then run with the memory read-only")
-    p.add_argument("--consolidator", default="append", choices=["append", "llm"])
+    p.add_argument("--consolidator", default="curator", choices=["curator", "append"])
     p.add_argument("--freeze-w", type=int, default=20)
     p.add_argument("--freeze-rho", type=float, default=0.1)
     p.add_argument("--probe-p", type=int, default=20)
-    p.add_argument("--inject-cap", type=int, default=None, help="playbook chars shown to the solver (default: all)")
-    p.add_argument("--max-tokens", type=int, default=8192, help="solver max_tokens")
-    p.add_argument("--critic-max-tokens", type=int, default=8192)
-    p.add_argument("--consolidator-max-tokens", type=int, default=512)
-    p.add_argument("--temperature", type=float, default=0.0, help="solver and critic decode temperature")
-    p.add_argument("--critic-memory-cap", type=int, default=CRITIC_MEMORY_CAP_CHARS, help="memory chars the critic sees")
+    p.add_argument("--token-budget", type=int, default=TOKEN_BUDGET, help="token budget quoted to the curator")
+    p.add_argument("--max-tokens", type=int, default=SOLVER_MAX_TOKENS, help="solver max_tokens")
+    p.add_argument("--critic-max-tokens", type=int, default=CRITIC_MAX_TOKENS)
+    p.add_argument("--consolidator-max-tokens", type=int, default=CURATOR_MAX_TOKENS)
     p.add_argument("--timeout-s", type=float, default=600.0, help="per-request timeout")
     p.add_argument("--skip-health", action="store_true", help="do not check that --model is served before starting")
     return p
@@ -167,7 +172,7 @@ def main(argv=None) -> int:
     K_given, args.K = args.K, (3 if args.K is None else args.K)
     try:
         cfg = config_for(args.mode, args.K, redundant_mode=args.redundant_mode, freeze_w=args.freeze_w,
-                         freeze_rho=args.freeze_rho, probe_p=args.probe_p, inject_cap_chars=args.inject_cap)
+                         freeze_rho=args.freeze_rho, probe_p=args.probe_p)
     except ValueError as e:
         raise SystemExit(str(e))
     if args.mode in ("react", "memory") and K_given not in (None, 1):
@@ -183,8 +188,7 @@ def main(argv=None) -> int:
 
     os.makedirs(args.out, exist_ok=True)
     config = {**vars(args), "K": cfg.K, "use_memory": cfg.use_memory, "core_mode": cfg.mode, "n_tasks": len(rows),
-              "data_sha256": file_sha256(args.data), "data_matches_manifest": bool(manifest.get("exact")),
-              "playbook_prefix": PLAYBOOK_PREFIX}
+              "data_sha256": file_sha256(args.data), "data_matches_manifest": bool(manifest.get("exact"))}
     cfg_path = os.path.join(args.out, "run_config.json")
     prev = {}
     if os.path.exists(cfg_path):
@@ -205,19 +209,19 @@ def main(argv=None) -> int:
             raise SystemExit(f"cannot reach {args.base_url}: {type(e).__name__}: {e}")
         if args.model not in served:
             raise SystemExit(f"model {args.model!r} not served at {args.base_url}: {served}")
-    solver = FormulaSolver(llm, max_tokens=args.max_tokens, temperature=args.temperature)
-    critic = FormulaCritic(llm, adaptive=cfg.adaptive, max_tokens=args.critic_max_tokens, temperature=args.temperature,
-                           memory_cap=args.critic_memory_cap)
-    consolidator = LLMConsolidator(llm, max_tokens=args.consolidator_max_tokens) if args.consolidator == "llm" \
-        else AppendConsolidator()
-    agent = FormulaAgent(cfg, solver, critic, Playbook(prefix=PLAYBOOK_PREFIX), consolidator, run_dir=args.out,
+    solver = FormulaSolver(llm, max_tokens=args.max_tokens)
+    critic = FormulaCritic(llm, adaptive=cfg.adaptive, max_tokens=args.critic_max_tokens)
+    consolidator = (CuratorConsolidator(llm, len(rows), cfg.adaptive, token_budget=args.token_budget,
+                                        max_tokens=args.consolidator_max_tokens)
+                    if args.consolidator == "curator" else AppendConsolidator())
+    agent = FormulaAgent(cfg, solver, critic, SectionedPlaybook.from_skeleton("counts"), consolidator, run_dir=args.out,
                          freeze_after=args.freeze_after)
 
     done = agent.done_indices()
     todo = [i for i in range(len(rows)) if i not in done]
     _log(f"[run] {len(todo)} to do / {len(rows)} listed ({len(done)} already in episodes.jsonl); arm={args.mode} "
          f"core={cfg.mode} K={cfg.K} memory={cfg.use_memory} redundant={cfg.redundant_mode} "
-         f"freeze_after={args.freeze_after} consolidator={args.consolidator} playbook={len(agent.playbook)} entries")
+         f"freeze_after={args.freeze_after} consolidator={args.consolidator} playbook={len(agent.playbook)} bullets")
     t_run = time.time()
     interrupted = False
     try:
@@ -226,7 +230,7 @@ def main(argv=None) -> int:
             rec = agent.run_task(make_task(i, rows[i]), i)
             eid = f"={rec['entry_id']}" if rec.get("entry_id") else ""
             _log(f"[s{i}] gate={rec['gate']} rounds={len(rec['rounds'])} stop={rec['stop_reason']} "
-                 f"store={rec['store_decision']}{eid} pb={len(agent.playbook)}e/{agent.playbook.chars()}c "
+                 f"store={rec['store_decision']}{eid} pb={len(agent.playbook)}b/{agent.playbook.chars()}c "
                  f"frozen={agent.policy.frozen}{' readonly' if rec.get('memory_readonly') else ''} "
                  f"answer={rec['final_answer']!r} {time.time() - t0:.1f}s")
     except KeyboardInterrupt:
@@ -235,7 +239,7 @@ def main(argv=None) -> int:
 
     res = write_final_results(args.out, rows, {**config, "elapsed_s": round(time.time() - t_run, 1)})
     _log("[final] " + summary_line(res) + f" solver_failures={solver.failures} critic_parse_failures={critic.parse_failures} "
-         f"critic_call_failures={critic.call_failures} critic_skipped_no_answer={critic.skipped_no_answer}")
+         f"critic_call_failures={critic.call_failures} curator_failures={getattr(consolidator, 'failures', 0)}")
     return 130 if interrupted else 0
 
 

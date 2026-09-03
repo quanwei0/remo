@@ -1,9 +1,10 @@
 """Post-hoc scoring of a Formula run directory (the only place the targets are read).
 
 A prediction is correct iff float(pred.replace(",", "")) == float(target.replace(",", "")); when either side is
-not a number the strings must be equal. final_results.json: accuracy, round-1 accuracy, gate distribution, store
-decisions, stop reasons, mean rounds (len(rounds), failed rounds included), memory size (entries / tiktoken
-cl100k_base tokens), LLM call and token totals, per-formula and per-task breakdowns, learn/frozen segments.
+not a number the strings must be equal (so the solver's "No final answer found" sentinel is wrong).
+final_results.json: accuracy, round-1 accuracy, gate distribution, store decisions (incl. curator_error), stop
+reasons, mean rounds (len(rounds), failed rounds included), memory size (bullets / chars / tiktoken cl100k_base
+tokens), LLM call and token totals, per-formula and per-task breakdowns, learn/frozen segments.
 
     python benchmarks/formula/scoring.py RUN_DIR --data data/formula_test.jsonl      # rescore an existing run
 """
@@ -17,6 +18,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
 from benchmarks.formula.data import DEFAULT_DATA_PATH, formula_name, load_rows   # noqa: E402
+from remo.memory import SectionedPlaybook                                          # noqa: E402
 
 TOKENIZER = "cl100k_base"
 
@@ -87,7 +89,8 @@ def score_run(run_dir: str, rows: list[dict], config: dict | None = None) -> dic
         per_formula[f]["n"] += 1
         per_formula[f]["correct"] += int(ok)
         per_task.append({"task_index": i, "formula": f, "correct": ok, "round1_correct": r1,
-                         "no_answer": not (ep.get("final_answer") or "").strip(), "rounds": len(ep.get("rounds") or []),
+                         "no_answer": not (ep.get("final_answer") or "").strip(),
+                         "rounds": len(ep.get("rounds") or []),
                          "gate": ep.get("gate"), "stop_reason": ep.get("stop_reason"),
                          "store_decision": ep.get("store_decision"), "memory_readonly": bool(ep.get("memory_readonly"))})
         for rd in ep.get("rounds") or []:
@@ -96,7 +99,7 @@ def score_run(run_dir: str, rows: list[dict], config: dict | None = None) -> dic
             llm["critic_calls"] += int(u.get("critic_calls", 0))
             llm["prompt_tokens"] += int(u.get("prompt_tokens", 0))
             llm["completion_tokens"] += int(u.get("completion_tokens", 0))
-        cu = ep.get("consolidator_usage") or {}
+        cu = ep.get("consolidator") or {}
         llm["consolidator_calls"] += int(cu.get("calls", 0))
         llm["prompt_tokens"] += int(cu.get("prompt_tokens", 0))
         llm["completion_tokens"] += int(cu.get("completion_tokens", 0))
@@ -112,7 +115,7 @@ def score_run(run_dir: str, rows: list[dict], config: dict | None = None) -> dic
     if os.path.exists(pb_path):
         with open(pb_path, encoding="utf-8") as f:
             pb_text = f.read()
-    entries = [l for l in pb_text.splitlines() if l.strip()]
+    entries = len(SectionedPlaybook(pb_text, "counts")) if pb_text else 0
     tokens = count_tokens(pb_text) if pb_text else 0
     ps_path = os.path.join(run_dir, "policy_state.json")
     if os.path.exists(ps_path):
@@ -130,7 +133,7 @@ def score_run(run_dir: str, rows: list[dict], config: dict | None = None) -> dic
         "store_decisions": _count(t["store_decision"] for t in per_task),
         "stop_reasons": _count(t["stop_reason"] for t in per_task),
         "mean_rounds": round(rounds_total / n, 4) if n else None, "rounds_total": rounds_total,
-        "memory": {"entries": len(entries), "tokens": tokens, "tokenizer": TOKENIZER if tokens is not None else "unavailable",
+        "memory": {"entries": entries, "tokens": tokens, "tokenizer": TOKENIZER if tokens is not None else "unavailable",
                    "chars": len(pb_text), "reinforced": reinforced, "frozen": policy.get("frozen", False),
                    "freeze_events": policy.get("freeze_events", [])},
         "llm": llm,

@@ -2,8 +2,8 @@
 from .config import RemoConfig
 from .interfaces import Trajectory, Reflection, Solver, Critic, Consolidator
 from .policy import RemoPolicy, EpisodeState, RoundRecord
-from .memory import Playbook
+from .memory import Playbook, SectionedPlaybook
 from .agent import ReMoAgent
 
 __all__ = ["RemoConfig", "Trajectory", "Reflection", "Solver", "Critic", "Consolidator",
-           "RemoPolicy", "EpisodeState", "RoundRecord", "Playbook", "ReMoAgent"]
+           "RemoPolicy", "EpisodeState", "RoundRecord", "Playbook", "SectionedPlaybook", "ReMoAgent"]

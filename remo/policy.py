@@ -1,5 +1,5 @@
 """Pure decision logic of Algorithms 1 (ReMo) and 2 (AdaReMo). No I/O, no LLM calls, so a
-benchmark harness with its own solve loop (e.g. AppWorld) can drive it step by step.
+benchmark harness with its own solve loop (e.g. FinanceGym) can drive it step by step.
 
 Per task:   after every round call `after_round` -> "accept" | "retry" | "stop"
             when the loop ends call `gate` and then `memory_decision`
@@ -22,7 +22,7 @@ class RoundRecord:
 class EpisodeState:
     rounds: list[RoundRecord] = field(default_factory=list)
     admitted: bool = False
-    stop_reason: str = "max_rounds"        # accepted | critic_stop | max_rounds
+    stop_reason: str = "max_rounds"        # accepted | critic_stop | max_rounds | solver_error | critic_error
 
     @property
     def last(self) -> Reflection:
@@ -46,8 +46,19 @@ class RemoPolicy:
         self.freeze_events: list[dict] = []
 
     # -- inner loop -------------------------------------------------------------------------------
-    def after_round(self, st: EpisodeState, completed: bool, refl: Reflection) -> str:
+    def after_round(self, st: EpisodeState, traj_failed: bool, completed: bool, refl: Reflection) -> str:
+        """Records the round and answers "accept" | "retry" | "stop". A failed solver call
+        (traj_failed; `refl` is the placeholder recorded for the round, no critic ran) stops with
+        "solver_error", a failed critic call (refl.failed) with "critic_error"; neither is admitted."""
+        if traj_failed:
+            completed = False
         st.rounds.append(RoundRecord(len(st.rounds) + 1, completed, refl))
+        if traj_failed:
+            st.stop_reason = "solver_error"
+            return "stop"
+        if refl.failed:
+            st.stop_reason = "critic_error"
+            return "stop"
         if completed and refl.correct:
             st.admitted, st.stop_reason = True, "accepted"
             return "accept"
@@ -67,14 +78,15 @@ class RemoPolicy:
         return "critic_stop" if st.stop_reason == "critic_stop" else "never_clean"
 
     # -- memory decision -------------------------------------------------------------------------
-    def memory_decision(self, st: EpisodeState, task_index: int, cited_id: str = "") -> str:
-        """Returns one of: skipped (not admitted / no lesson), stored, reinforced, discarded,
-        skipped_frozen. The caller performs the actual write for "stored" (consolidator) and
-        "reinforced" (playbook.reinforce(cited_id)); this method only decides and does the
+    def memory_decision(self, st: EpisodeState, task_index: int, cited_present: list[str]) -> str:
+        """Returns one of: skipped (not admitted), stored, reinforced, discarded, skipped_frozen.
+        `cited_present` are the entry ids the critic cited that exist in the playbook. The caller
+        performs the actual write for "stored" (consolidator, which may add nothing) and
+        "reinforced" (playbook.reinforce on every cited id); this method only decides and does the
         saturation bookkeeping."""
-        if not st.admitted or not st.lesson():
+        if not st.admitted:
             return "skipped"
-        if not self.cfg.adaptive:                        # Alg. 1: every admitted lesson is stored
+        if not self.cfg.adaptive:                        # Alg. 1: every admitted episode is consolidated
             return "stored"
         refl = st.last
         probe = (task_index + 1) % self.cfg.probe_p == 0
@@ -88,7 +100,7 @@ class RemoPolicy:
                     self.frozen = False
                     self.freeze_events.append({"task_index": task_index, "event": "unfreeze(probe)"})
                 decision = "stored"
-        elif self.cfg.redundant_mode == "reinforce" and cited_id:
+        elif self.cfg.redundant_mode == "reinforce" and cited_present:
             decision = "reinforced"
         # saturation window records memory DEMAND (the critic wanted to store, or reinforced), not
         # whether the write happened: counting only actual writes would make a freeze self-sustaining

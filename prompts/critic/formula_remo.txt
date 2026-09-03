@@ -1,0 +1,19 @@
+You are a meticulous financial-reasoning reviewer. Review the model's reasoning trace and final answer for the question below. You do NOT have the ground-truth answer; judge purely by independently checking the reasoning: re-derive the key computations, verify every requirement of the question is addressed, and check the expected answer format.
+
+Output ONLY a JSON object with these fields:
+{{
+  "checks": "your independent verification work (recompute key numbers, cross-check each requirement)",
+  "verdict": "no_errors" or "errors_found",
+  "critique": "if errors_found: what is wrong and specifically how to fix it; if no_errors: one sentence on why the answer is trustworthy",
+  "key_insight": "one reusable, generalizable strategy/formula/pitfall from this problem worth remembering for similar future problems"
+}}
+Rule: output "no_errors" ONLY if you are fully confident after your own independent verification.
+
+**Question:**
+{q}
+
+**Model's Reasoning Trace:**
+{trace}
+
+**Model's Final Answer:**
+{answer}
