@@ -1,44 +1,39 @@
 # ReMo / AdaReMo
 
-Reference implementation of **From More to Enough: Rethinking Refinement and Memory in Self-Improving LLM Agents**,
-with runners for the three benchmarks used in the paper: AppWorld, Formula and FinanceGym.
+Reference implementation of **From More to Enough: Rethinking Refinement and Memory in Self-Improving LLM Agents**, with
+runners for AppWorld, Formula and FinanceGym.
 
-* **ReMo** (Algorithm 1) couples a solver–critic refinement loop within each task (round budget `K`) with an append-only
-  memory across tasks. Memory is written only for episodes the outcome gate admits (`round1_clean`, `cross_round_validated`);
-  episodes that never became clean leave no trace.
-* **AdaReMo** (Algorithm 2) hands two budget decisions to the critic — `refine` (retry only with an actionable fix, otherwise
-  `critic_stop`) and `store` (evidence-backed, generalizable, novel; a covered lesson must cite the entry it duplicates) — and
-  adds a saturation freeze over the last `freeze_w` admitted episodes. Redundant lessons are *reinforced* by default
-  (`helpful+1` on the cited entry, no model call); `--redundant-mode gate` discards them instead.
-
-Every baseline in the paper is a configuration of the same loop: ReAct (`K=1`, no memory), refinement only (`K>1`, no
-memory), memory only (`K=1`, memory on).
+- **ReMo** (Algorithm 1): a solver–critic refinement loop inside each task (round budget `K`) plus an append-only memory across
+  tasks. Memory is written only for episodes the outcome gate admits (`round1_clean`, `cross_round_validated`).
+- **AdaReMo** (Algorithm 2): the critic also decides `refine` (retry only with an actionable fix, else `critic_stop`) and
+  `store` (evidence-backed, generalizable, novel — a covered lesson must cite the entry it duplicates); a saturation freeze
+  stops consolidation once the last `freeze_w` admitted episodes stop demanding writes. Redundant lessons are *reinforced*
+  (`helpful+1` on the cited entry, no model call) or, with `--redundant-mode gate`, discarded.
+- Every baseline is a configuration of the same loop: ReAct = `K=1`, no memory; refinement only = `K>1`, no memory;
+  memory only = `K=1`, memory on.
 
 ## Layout
 
 ```
 remo/                          core: RemoConfig, RemoPolicy (decisions), Playbook (memory), critic contract, ReMoAgent loop
-benchmarks/formula/            numeric financial QA, 200 questions, exact-match accuracy                  run_formula.py
-benchmarks/appworld/           ReAct agent in the AppWorld REPL, test_normal 168 tasks, TGC / SGC          run_appworld.py
-benchmarks/financegym/         FinanceHarness research reports on a point-in-time corpus, e-mailed grading run_financegym.py
-benchmarks/financegym/corpus_pipeline/   scripts and the WARC list that rebuild the point-in-time news corpus
+benchmarks/formula/            numeric financial QA, 200 questions, exact-match accuracy            run_formula.py
+benchmarks/appworld/           ReAct agent in the AppWorld REPL, test_normal 168 tasks, TGC / SGC    run_appworld.py
+benchmarks/financegym/         FinanceHarness research reports on a point-in-time corpus              run_financegym.py
+benchmarks/financegym/corpus_pipeline/   scripts + WARC list that rebuild the point-in-time news corpus
 scripts/servers/               vLLM launch scripts (gpt-oss-120b / 20b), embedding server, search server
-third_party/finance_harness/   the official FinanceGym agent (Apache-2.0 + CC BY-NC 4.0 notice; provenance in third_party/NOTICE.md)
-tests/                         unit tests of the Algorithm 1/2 semantics (fake solver and critic, no model needed)
+third_party/finance_harness/   the official FinanceGym agent (Apache-2.0; CC BY-NC 4.0 notice; see third_party/NOTICE.md)
+tests/                         unit tests of the Algorithm 1/2 semantics and repository hygiene (no model needed)
 ```
 
-`remo/` contains no benchmark code and never sees ground truth; each `benchmarks/<name>/` folder plugs a solver, a critic
-prompt, a data loader and a post-hoc scorer into it. Mapping to the paper's pseudocode: `Solve` = `Solver.solve(task, M, ρ)`;
-`Reflect` = `Critic.reflect` → `Reflection(v, ρ, g_ref, g_sto)`; `completed(τ)` = `Trajectory.completed`; the gate and
-`admitted` = `RemoPolicy`; `Consolidate` = an append-only `Consolidator`; `Saturated` = the freeze window in
-`RemoPolicy.memory_decision`.
+- `remo/` has no benchmark code and never sees ground truth; each `benchmarks/<name>/` plugs in a solver, a critic prompt,
+  a data loader and a post-hoc scorer.
+- Paper ↔ code: `Solve` = `Solver.solve(task, M, ρ)` · `Reflect` = `Critic.reflect` → `Reflection(v, ρ, g_ref, g_sto)` ·
+  `completed(τ)` = `Trajectory.completed` · gate / `admitted` = `RemoPolicy` · `Consolidate` = append-only `Consolidator` ·
+  `Saturated` = the freeze window in `RemoPolicy.memory_decision`.
 
-## Reproducing the paper
+## Install
 
-All experiments use gpt-oss-120b and gpt-oss-20b served locally with vLLM 0.23.0 on NVIDIA H100 80GB GPUs; no API keys are
-needed. The benchmarks have incompatible Python dependencies, so two environments are used.
-
-### Install
+Two environments (the benchmarks' dependencies conflict):
 
 ```bash
 git clone https://github.com/quanwei0/remo.git && cd remo
@@ -48,40 +43,34 @@ pip install -e ".[agents]" && appworld install
 # FinanceGym
 conda create -y -n remo-financegym python=3.12 && conda activate remo-financegym
 pip install -e ".[financegym]" && pip install -e third_party/finance_harness
-# sanity check (no model needed)
+# sanity check
 python -m unittest discover -s tests
 ```
 
-### Data
+## Data
 
-| benchmark | what | in this repo | how you get it | license |
-|---|---|---|---|---|
-| Formula | 200 numeric questions over financial formulas (`context` = instruction + question, `target` = number) | **not the questions** (the source declares no license); `benchmarks/formula/data/formula_test.sha256` — one SHA-256 per row, so the exact 200 items can be reconstructed | `benchmarks/formula/prepare_data.py` downloads the public FinLoRA source and keeps the rows whose hashes match | source: FinLoRA (no license declared) |
-| AppWorld | 9 simulated apps, ~450 APIs, populated databases; `test_normal` 168 tasks / 56 scenarios (`test_challenge` 417 / 139) | nothing | `appworld install` + `appworld download data` (official package) | Apache-2.0 |
-| FinanceGym questions | 400 research questions, each with a point-in-time cutoff | `third_party/finance_harness/FinanceGym/data/benchmark_400_public.jsonl` | already there | Apache-2.0 file headers; the harness README adds a CC BY-NC 4.0 non-commercial notice (`third_party/NOTICE.md`) |
-| FinanceGym corpus | point-in-time news corpus: CC-NEWS Oct-2024 … Nov-2025, 6,758 WARC files → 145.3M articles, Qwen3-Embedding-4B, IVF-SQ8 index (nlist 12,053, nprobe 32) | **not the corpus** (terabytes); `corpus_pipeline/warc_paths.txt` is the exact WARC list, next to the build scripts | rebuild with `corpus_pipeline/` (Common Crawl is public; ~3 days of embedding on 8 H100s) | Common Crawl terms |
-| FinanceGym rubrics | withheld by the organizers | — | scores come back by e-mail | — |
+| benchmark | what | in this repo | how to get it |
+|---|---|---|---|
+| Formula | 200 numeric questions over financial formulas (FinLoRA; no license declared) | only `benchmarks/formula/data/formula_test.sha256` (one hash per row) | `benchmarks/formula/prepare_data.py` downloads the public source and keeps exactly the 200 matching rows |
+| AppWorld | 9 apps, ~450 APIs; `test_normal` 168 tasks / 56 scenarios (Apache-2.0) | nothing | `appworld install` + `appworld download data` |
+| FinanceGym questions | 400 research questions with a point-in-time cutoff (Apache-2.0 + CC BY-NC 4.0 notice) | `third_party/finance_harness/FinanceGym/data/benchmark_400_public.jsonl` | already there |
+| FinanceGym corpus | CC-NEWS Oct-2024 … Nov-2025, 6,758 WARCs → 145.3M articles, Qwen3-Embedding-4B, IVF-SQ8 (nlist 12,053 / nprobe 32) | `corpus_pipeline/warc_paths.txt` + build scripts | rebuild with `corpus_pipeline/` (Common Crawl is public; ~3 days on 8 H100s) |
+| FinanceGym rubrics | withheld by the organizers | — | scores come back by e-mail |
 
-Run outputs (`runs/`) are not versioned.
+## Models
 
-### Models: local vLLM or an API
+Every runner talks to an OpenAI-compatible chat endpoint: `--base-url`, `--model`, key in `REMO_API_KEY` (default `EMPTY`).
 
-Every runner talks to an OpenAI-compatible chat endpoint chosen by `--base-url` / `--model`; the key comes from
-`REMO_API_KEY` (default `EMPTY`, which is what a local vLLM expects). The paper's numbers use gpt-oss served locally.
+**Local vLLM (paper setting: gpt-oss-120b / 20b, temperature 0)**
 
-**Local (paper setting).**
+| script | serves |
+|---|---|
+| `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, TP=4, port 8125 — the tool-call flags inside are required by FinanceGym |
+| `scripts/servers/vllm_20b.sh` | GPT-OSS-20B, one GPU, port 8126 |
+| `scripts/servers/embed_server.sh` | Qwen3-Embedding-4B, port 8888 (FinanceGym queries; same model as the corpus) |
+| `scripts/servers/pit_server.sh` | FinanceGym point-in-time search, port 8889 (CPU node, ~450 GB RAM) |
 
-| script | serves | notes |
-|---|---|---|
-| `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, tensor-parallel 4, port 8125 | `--enable-auto-tool-choice --tool-call-parser openai` is required by FinanceGym (tool calling); harmless elsewhere |
-| `scripts/servers/vllm_20b.sh` | GPT-OSS-20B, one GPU, port 8126 | |
-| `scripts/servers/embed_server.sh` | Qwen3-Embedding-4B, port 8888 | FinanceGym query embeddings — must be the model the corpus was embedded with |
-| `scripts/servers/pit_server.sh` | FinanceGym point-in-time search, port 8889 | CPU node; ~450 GB RAM for the full corpus |
-
-Every runner takes `--base-url http://HOST:PORT/v1 --model GPT-OSS-120B` (or `GPT-OSS-20B`). AppWorld and Formula decode
-at temperature 0; FinanceGym uses the harness defaults.
-
-**API (any OpenAI-compatible provider).** Set the key and point the runner at the provider:
+**Any OpenAI-compatible API**
 
 ```bash
 export REMO_API_KEY=sk-...
@@ -89,103 +78,93 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
        --base-url https://api.openai.com/v1 --model gpt-4o --out runs/formula/gpt4o_adaremo_k3
 ```
 
-The same flags work for `run_appworld.py`. This covers OpenAI, and any provider with an OpenAI-compatible endpoint
-(Anthropic's `https://api.anthropic.com/v1/`, DeepSeek, Together, OpenRouter, ...). Two things differ for FinanceGym: the
-model must support function calling (FinanceHarness retrieves through tool calls), and the harness reads the backbone /
-page-reader key from its provider profile rather than from `REMO_API_KEY` — in
-`third_party/finance_harness/configs/providers.json` add `"api_key_env": "OPENAI_API_KEY", "api_key_literal": null` to the
-`vllm` profile (file fields override the code defaults) and export that variable. Our critic and consolidator still use
-`REMO_API_KEY`. Mind the cost: one AppWorld task is roughly 200k prompt tokens per round, so a full `test_normal` replicate is
-40–50M input tokens; FinanceGym is similar; Formula is small. Runs are resumable: each run directory holds `episodes.jsonl`
-(one record per task: rounds, verdicts, gate, store decision), `playbook.txt`, `policy_state.json` and, when finished,
-`final_results.json`.
+- Works for OpenAI and any compatible endpoint (Anthropic `https://api.anthropic.com/v1/`, DeepSeek, Together, OpenRouter …);
+  same flags for `run_appworld.py`.
+- FinanceGym: the model must support function calling; the harness reads the backbone / reader key from its own profile —
+  add `"api_key_env": "OPENAI_API_KEY", "api_key_literal": null` to the `vllm` profile in
+  `third_party/finance_harness/configs/providers.json` and export that variable.
+- Cost: one AppWorld task ≈ 200k prompt tokens per round (a `test_normal` replicate ≈ 40–50M input tokens); FinanceGym is
+  similar; Formula is small.
 
-### Arms
-
-The same flags select every arm on every benchmark:
+## Arms
 
 | paper arm | `--mode` | `--K` |
 |---|---|---|
 | ReAct | `react` | 1 |
 | refinement only | `refine` | 2 … 5 |
 | memory only | `memory` | 1 |
-| ReMo | `remo` | 1 … 5 (paper default 3) |
-| AdaReMo (reinforce; `--redundant-mode gate` for the ablation) | `adaremo` | 1 … 5 |
+| ReMo | `remo` | 1 … 5 (default 3) |
+| AdaReMo | `adaremo` (`--redundant-mode gate` for the ablation) | 1 … 5 |
 
-`--K` defaults to 3 and is fixed at 1 for the K=1 arms. FinanceGym adds `--mode baseline` (the official harness alone, see
-below). Replicates are independent runs (`r1`, `r2`, …) launched concurrently against one server — never copies of a run
-directory. Learn-then-freeze (RQ3): `--freeze-after A` consolidates on the first *A* tasks and runs the rest with the memory
-read-only. `--consolidator llm` (default `append`) condenses each stored lesson into one general line with one model call.
-Mean rounds are counted as `len(rounds)`, so a failed generation still spends a round.
+- Replicates are independent runs (`r1`, `r2`, …) launched concurrently against one server — never copied run directories.
+- `--freeze-after A`: consolidate on the first *A* tasks, then run with the memory read-only (learn-then-freeze, RQ3).
+- `--consolidator llm`: condense each stored lesson into one general line with one model call (default `append`).
+- Mean rounds = `len(rounds)`: a failed generation still spends a round.
+- Runs resume from `episodes.jsonl`; a run directory refuses a different `--K`, `--mode` or `--model`.
 
-### Formula (env `remo-agents`)
+**What a run directory contains**
 
-A prediction is correct iff it equals the reference as a float (commas stripped).
+- `episodes.jsonl` — one record per task: rounds, verdicts, gate, store decision
+- `playbook.txt`, `policy_state.json` — the memory and the freeze window
+- full trajectories: Formula `trajs.jsonl` (every reply per round); AppWorld `trajs/<task_id>.json` (every step's
+  reply / code / output and the critic's raw reply) plus AppWorld's own `experiments/outputs/<name>/tasks/<task_id>/`
+  (databases, logs, `misc/remo_rounds.json`); FinanceGym `trajs/<task_id>.json` (every round's report, queries, critic reply)
+- `final_results.json` — accuracy or TGC/SGC (not for FinanceGym), round-1 accuracy, gate distribution, store decisions,
+  mean rounds, memory entries / tokens
+
+## Formula (env `remo-agents`)
 
 ```bash
 python benchmarks/formula/prepare_data.py --out data/formula_test.jsonl
-URL=http://HOST:8125/v1
 for r in 1 2 3; do
   python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
          --base-url $URL --model GPT-OSS-120B --out runs/formula/adaremo_k3_r$r &
 done; wait
 ```
 
-The 20B rows use `--model GPT-OSS-20B` against the 20B server. `final_results.json` reports accuracy, round-1 accuracy, the
-gate distribution, store decisions, mean rounds and the memory size (entries / tokens); `scoring.py RUN_DIR --data …`
-rescores a finished run. `prepare_data.py --from-file PATH`
-converts a local copy instead of downloading (all 200 manifest hashes must match; the rebuilt file is byte-identical to the
-one evaluated). `--consolidator llm` rewrites each admitted lesson into one general entry with one extra call (default
-`append` stores the critic's lesson verbatim); the learn-then-freeze split is `--freeze-after 100`. Details and the
-output format: `benchmarks/formula/README.md`.
+- Correct iff the prediction equals the reference as a float (commas stripped).
+- 20B rows: `--model GPT-OSS-20B` against the 20B server. Learn-then-freeze: `--freeze-after 100`.
+- `prepare_data.py --from-file PATH` converts a local copy; all 200 manifest hashes must match.
+- `scoring.py RUN_DIR --data …` rescores a finished run. Details: `benchmarks/formula/README.md`.
 
-### AppWorld (env `remo-agents`)
+## AppWorld (env `remo-agents`)
 
 ```bash
 export APPWORLD_ROOT=$PWD/data/appworld && mkdir -p $APPWORLD_ROOT && (cd $APPWORLD_ROOT && appworld download data)
-URL=http://HOST:8125/v1
 python benchmarks/appworld/run_appworld.py --mode adaremo --K 3 --split test_normal \
        --base-url $URL --model GPT-OSS-120B --out runs/appworld/adaremo_k3_r1
 ```
 
-The agent is a ReAct loop in the AppWorld Python REPL (one code block per step, at most `--max-steps` steps, default 40). A round is
-`completed` when the task is submitted and the last execution output shows no error; a retry starts a fresh world with the
-critic's critique injected. AppWorld writes each world's end state to `$APPWORLD_ROOT/experiments/outputs/<name>/` (`--root` overrides the root)
-(`<name>` = basename of `--out`, or `--experiment-name`). Evaluation is post hoc with AppWorld's unit tests: after the
-last task the runner scores every task it ran (`appworld.evaluator.evaluate_task`; for a whole split this equals
-`appworld evaluate <name> test_normal --root $APPWORLD_ROOT`) and writes TGC = % of tasks passing all assertions and
-SGC = % of scenarios whose tasks all pass, plus the same numbers for the round-1 snapshot `<name>__round1`, into
-`final_results.json` (`--eval-only` recomputes it). The paper reports `test_normal` (168 tasks, 56 scenarios), five
-replicates at K=3 and three otherwise; learn-then-freeze uses `--freeze-after 90`. Details: `benchmarks/appworld/README.md`.
+- ReAct loop in the AppWorld REPL: one code block per step, at most `--max-steps` (40).
+- A round is `completed` when the task is submitted and the last execution output shows no error; a retry opens a fresh
+  world with the critique injected.
+- Scoring is post hoc with AppWorld's unit tests (`appworld.evaluator.evaluate_task`, = `appworld evaluate <name> test_normal --root $APPWORLD_ROOT`):
+  TGC = % tasks passing all assertions, SGC = % scenarios whose tasks all pass; `--eval-only` recomputes them.
+- Paper: `test_normal`, five replicates at K=3, three otherwise; learn-then-freeze `--freeze-after 90`.
+  Details: `benchmarks/appworld/README.md`.
 
-### FinanceGym (env `remo-financegym`)
+## FinanceGym (env `remo-financegym`)
 
-FinanceGym has no local ground truth: `answers.jsonl` is e-mailed to the organizers, who score it against a withheld rubric
-(https://financegym.github.io/). Our entries: `gptoss120b-financeharness` (baseline, 31.9), `gptoss120b-financeharness-remo`,
-`gptoss120b-financeharness-adaremo`.
+No local ground truth: `answers.jsonl` is e-mailed to the organizers (https://financegym.github.io/). Our entries:
+`gptoss120b-financeharness` (baseline, 31.9), `gptoss120b-financeharness-remo`, `gptoss120b-financeharness-adaremo`.
 
-1. **Corpus** (once; heavy). Rebuild the point-in-time corpus with `benchmarks/financegym/corpus_pipeline/`
-   (download → extract → embed → merge → `fg_finalize.sh` builds the index); set the paths at the top of each script.
-2. **Servers**: `pit_server.sh` (`DATA=<corpus dir>`), `embed_server.sh`, `vllm_120b.sh` (tool-call flags!).
-3. **Runs**, from `third_party/finance_harness` (the harness discovers project skills in `./skills` of the working
-   directory; its `configs/*.json` sit next to its package, and `--model` / `--base-url` override the model name and URL
-   for the backbone, the page reader and the critic):
+1. Corpus (once, heavy): `benchmarks/financegym/corpus_pipeline/` — download → extract → embed → merge → `fg_finalize.sh`.
+2. Servers: `pit_server.sh` (`DATA=<corpus dir>`), `embed_server.sh`, `vllm_120b.sh`.
+3. Runs, from `third_party/finance_harness` (the harness reads its `skills/` from the working directory):
    ```bash
    cd third_party/finance_harness
    export FH_VLLM_BASE_URL=$URL FH_VLLM_READER_BASE_URL=$URL FH_PIT_URL=http://PIT:8889 FH_EMBED_URL=http://EMBED:8888/v1/embeddings
-   python ../../benchmarks/financegym/run_financegym.py --mode baseline --out ../../runs/financegym/baseline   # official harness alone
+   python ../../benchmarks/financegym/run_financegym.py --mode baseline --out ../../runs/financegym/baseline
    python ../../benchmarks/financegym/run_financegym.py --mode remo    --K 3 --out ../../runs/financegym/remo
    python ../../benchmarks/financegym/run_financegym.py --mode adaremo --K 3 --out ../../runs/financegym/adaremo
    ```
-   `--mode baseline` is the official harness with one attempt, no critic and no memory (the leaderboard entry); the
-   other arms are as in the table above, plus `--consolidator llm` to condense each stored lesson with one model call.
-   Eight tasks run concurrently (`--conc`). A task is saved only if at least three documents were retrieved
-   (`--min-docs`, a guard against a dead embedding service). `check_answers.py` deletes defective reports (< 1500
-   characters or a tool-call fragment) so a rerun redoes them; `make_answers.py` writes `answers.jsonl` with each
-   question verbatim in benchmark order; `calibrate.py` runs the critic over a finished run to measure its flag rate
-   before spending retries. `final_results.json` has no accuracy (the score comes from the organizers) but the same
-   gate / store / rounds / memory statistics as the other benchmarks.
-4. **Submission**: gzip `answers.jsonl` and e-mail it with the metadata block as described on the benchmark page.
+4. Submission: gzip `answers.jsonl` and e-mail it with the metadata block described on the benchmark page.
+
+- `--mode baseline` = the official harness alone (one attempt, no critic, no memory) — the leaderboard entry.
+- `--conc` tasks run concurrently (8); a task is saved only if ≥ `--min-docs` (3) documents were retrieved.
+- `check_answers.py` deletes defective reports (< 1500 chars or a tool-call fragment) so a rerun redoes them;
+  `make_answers.py` writes `answers.jsonl` with each question verbatim in benchmark order;
+  `calibrate.py` measures the critic's flag rate on a finished run before spending retries.
 
 ## Citation
 
