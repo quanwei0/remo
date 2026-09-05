@@ -554,3 +554,13 @@ class TestRecords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExperimentName(unittest.TestCase):
+    def test_memory_is_rewritten(self):
+        notes = []
+        self.assertEqual(ra.experiment_name_for("runs/appworld/x_react_r1", None, log=notes.append), "x_react_r1")
+        self.assertEqual(notes, [])
+        self.assertEqual(ra.experiment_name_for("runs/appworld/x_memory_r1", None, log=notes.append), "x_mem_r1")
+        self.assertEqual(ra.experiment_name_for("runs/appworld/x", "memory_arm", log=notes.append), "mem_arm")
+        self.assertEqual(len(notes), 2)

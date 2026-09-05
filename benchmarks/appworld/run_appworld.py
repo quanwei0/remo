@@ -233,6 +233,18 @@ def read_episodes(run_dir: str) -> list[dict]:
         return [json.loads(l) for l in f if l.strip()]
 
 
+def experiment_name_for(out: str, explicit: str | None, log=_log) -> str:
+    """AppWorld experiment name: --experiment-name, else the basename of --out. appworld rejects any
+    changes-file path containing the substring "memory" (it looks like an in-memory SQLite connection
+    string) at evaluation time, so "memory" in the name is rewritten to "mem"."""
+    name = explicit or os.path.basename(os.path.normpath(out))
+    if "memory" in name:
+        fixed = name.replace("memory", "mem")
+        log(f"[run] experiment name {name!r} contains 'memory', which appworld's evaluator rejects; using {fixed!r}")
+        name = fixed
+    return name
+
+
 def evaluate_experiment(experiment_name: str, task_ids: list[str], log=_log) -> dict:
     """TGC / SGC (percent, AppWorld's Metric) over `task_ids` with AppWorld's unit tests, reading the end
     state from experiments/outputs/<experiment_name>/tasks/<id>/dbs. Per task: evaluate_task (also saves
@@ -359,7 +371,7 @@ def main(argv=None) -> int:
     cfg = make_config(args.mode, args.K, args.redundant_mode, args.freeze_w, args.freeze_rho, args.probe_p)
     args.K = cfg.K
     initial_playbook = None if args.no_initial_playbook else os.path.abspath(args.initial_playbook)
-    experiment = args.experiment_name or os.path.basename(os.path.normpath(args.out))
+    experiment = experiment_name_for(args.out, args.experiment_name, log=_log)
     round1_experiment = None if args.no_round1_snapshot else f"{experiment}__round1"
     os.makedirs(args.out, exist_ok=True)
     cfg_path = os.path.join(args.out, "run_config.json")

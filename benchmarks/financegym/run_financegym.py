@@ -2,8 +2,8 @@
 questions, no local ground truth — the organizers grade the submitted reports.
 
 Arms (--mode): baseline = the official FinanceHarness alone (one attempt, no critic, no memory — the
-leaderboard entry), react (K=1, no memory), refine (K>1, no memory), memory (K=1, memory), remo
-(Algorithm 1), adaremo (Algorithm 2). --freeze-after A consolidates on the first A tasks and runs the
+leaderboard entry and the ReAct arm of this benchmark); the other arms wrap the same harness: refine (K>1,
+no memory), memory (K=1, memory), remo (Algorithm 1), adaremo (Algorithm 2). --freeze-after A consolidates on the first A tasks and runs the
 rest with the memory read-only (they wait until the A learning tasks have finished).
 
 The FinanceHarness solver is async and 8 tasks run concurrently, while remo.ReMoAgent.run_task is
@@ -228,9 +228,9 @@ async def run_all(tasks: list[dict], rs: RunState, solver, critic, conc: int, mi
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--mode", required=True, choices=MODES,
-                   help="baseline = official harness alone; react / refine / memory = ablation arms; "
-                        "remo = Alg. 1; adaremo = Alg. 2")
-    p.add_argument("--K", type=int, default=None, help="round budget per task (default 1 for baseline/react/memory, else 3)")
+                   help="baseline = official harness alone (the ReAct arm); refine / memory = ablation arms on the "
+                        "same harness; remo = Alg. 1; adaremo = Alg. 2")
+    p.add_argument("--K", type=int, default=None, help="round budget per task (default 1 for baseline/memory, else 3)")
     p.add_argument("--out", required=True, help="run dir (resumable)")
     p.add_argument("--limit", type=int, default=0, help="first N benchmark tasks (0 = all 400)")
     p.add_argument("--base-url", default=None,

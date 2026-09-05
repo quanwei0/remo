@@ -286,20 +286,14 @@ class TestDriver(unittest.TestCase):
         self.assertEqual(solver.calls[0][1:], (0, None))       # empty memory, no critique
 
     def test_arm_configs(self):
-        self.assertEqual(make_config("react", None)[0].K, 1); self.assertFalse(make_config("react", None)[0].use_memory)
+        self.assertEqual(make_config("baseline", None)[0].K, 1); self.assertFalse(make_config("baseline", None)[0].use_memory)
         self.assertEqual(make_config("refine", 3)[0].K, 3); self.assertFalse(make_config("refine", None)[0].use_memory)
         self.assertTrue(make_config("memory", None)[0].use_memory); self.assertEqual(make_config("memory", 1)[0].K, 1)
         self.assertEqual(make_config("remo", None)[0].mode, "remo"); self.assertEqual(make_config("adaremo", 5)[0].K, 5)
         self.assertEqual(make_config("adaremo", None, redundant_mode="gate")[0].redundant_mode, "gate")
-        for bad in (("react", 3), ("memory", 2), ("baseline", 2), ("refine", 1), ("nope", None)):
+        for bad in (("memory", 2), ("baseline", 2), ("refine", 1), ("react", None), ("nope", None)):
             with self.assertRaises(ValueError):
                 make_config(*bad)
-        # react: critic runs (its verdict is recorded) but nothing is retried or written
-        rs = RunState(make_config("react", None)[0], self.d)
-        critic = FakeCritic(lambda t, tr, m, r: Reflection("incorrect", critique="c", lesson="L"))
-        s = _run(_tasks(2), rs, FakeSolver(), critic)
-        self.assertEqual(critic.calls, 2); self.assertEqual(s["gates"], {"never_clean": 2})
-        self.assertEqual(s["store_decisions"], {"no_memory": 2}); self.assertEqual(len(rs.playbook), 0)
 
     def test_freeze_after_barrier_and_readonly(self):
         tasks = _tasks(6)

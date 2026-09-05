@@ -66,7 +66,8 @@ corpus_pipeline/   rebuild of the point-in-time corpus (WARC list + scripts; see
   `--base-url` (default `$FH_VLLM_BASE_URL`), the reader alone from `FH_VLLM_READER_BASE_URL` when set.
 * Three live services:
   * a vLLM serving the backbone with **tool-call parsing on** (`--enable-auto-tool-choice --tool-call-parser openai`;
-    without it the harness gets empty content and ends after one round) — `scripts/servers/vllm_120b.sh`;
+    without it the harness gets empty content and ends after one round) — `TOOLS=1 scripts/servers/vllm_120b.sh`
+    (the flag is off by default because Formula and AppWorld must run without the parser);
   * the FinanceGym PIT search service (`scripts/servers/pit_server.sh`, ~450 GB RAM for the 145 M-document corpus) —
     `--pit-url` / `FH_PIT_URL`;
   * a query-embedding endpoint serving `Qwen/Qwen3-Embedding-4B` (`scripts/servers/embed_server.sh`) —
@@ -84,13 +85,12 @@ PIT-compliant (state this in any write-up).
 
 ```bash
 cd third_party/finance_harness                    # the harness looks for project skills in ./skills of the cwd
-URL=http://HOST:8125/v1                           # vLLM, tool-call parsing on
+URL=http://HOST:8125/v1                           # vLLM started with TOOLS=1 (tool-call parsing on)
 export FH_VLLM_BASE_URL=$URL FH_VLLM_READER_BASE_URL=$URL
 export FH_PIT_URL=http://PIT_HOST:8889 FH_EMBED_URL=http://EMB_HOST:8888/v1/embeddings
 RUN=../../benchmarks/financegym/run_financegym.py
 
-python $RUN --mode baseline        --out ../../runs/financegym/baseline    # official harness alone (leaderboard 31.9)
-python $RUN --mode react           --out ../../runs/financegym/react       # K=1, critic verdict recorded, no memory
+python $RUN --mode baseline        --out ../../runs/financegym/baseline    # official harness alone = the ReAct arm (leaderboard 31.9)
 python $RUN --mode refine  --K 3   --out ../../runs/financegym/refine_k3   # refinement only
 python $RUN --mode memory          --out ../../runs/financegym/memory      # memory only (K=1)
 python $RUN --mode remo    --K 3   --out ../../runs/financegym/remo_k3     # Algorithm 1 (the submitted ReMo run)
@@ -99,7 +99,7 @@ python $RUN --mode adaremo --K 3 --freeze-after 200 --out ../../runs/financegym/
 python $RUN --mode adaremo --K 3 --limit 1 --conc 1 --out ../../runs/financegym/smoke                 # smoke (3-25 min: one task, one or two rounds)
 ```
 
-Flags shared by every runner: `--mode`, `--K` (default 1 for baseline/react/memory, else 3), `--out`, `--limit N`
+Flags shared by every runner: `--mode`, `--K` (default 1 for baseline/memory, else 3), `--out`, `--limit N`
 (first N benchmark tasks), `--base-url`, `--model`, `--redundant-mode {reinforce,gate,off}` (AdaReMo: a lesson the
 critic judges covered gives `helpful+1` to the cited entry, no model call; `gate` discards it), `--freeze-after A`
 (consolidate on the first A tasks, then read-only memory; the read-only tasks wait until the A learning tasks have

@@ -35,10 +35,11 @@ SOLVER_PROMPT = read_prompt("solver/formula.txt")
 class ChatLLM:
     """OpenAI-compatible chat completion as the paper's runs made it: one user message, temperature 0, a
     max_tokens per role. Called as llm(prompt, max_tokens) -> (text, usage). A reply without content is an
-    error (a failed call); timeouts, rate limits, connection and 5xx errors are retried after a pause."""
+    error (a failed call, as in the paper's runs); timeouts, rate limits, connection and 5xx errors are retried after a
+    pause, up to 1000 times as the paper's client did."""
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, model: str = DEFAULT_MODEL, timeout: float = 600.0,
-                 transient_retries: int = 5, pause_s: float = 15.0):
+                 transient_retries: int = 1000, pause_s: float = 15.0):     # the paper's client retried transient errors up to 1000 times, 15 s apart
         import openai
         self.openai = openai
         self.client = openai.OpenAI(api_key=os.environ.get("REMO_API_KEY", "EMPTY"), base_url=base_url, timeout=timeout)

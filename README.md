@@ -69,7 +69,7 @@ Every runner talks to an OpenAI-compatible chat endpoint: `--base-url`, `--model
 
 | script | serves |
 |---|---|
-| `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, TP=4, port 8125 — the tool-call flags inside are required by FinanceGym |
+| `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, TP=4, port 8125. `TOOLS=1` adds the tool-call parser FinanceGym needs; Formula and AppWorld run **without** it (paper setting — the parser changes what gpt-oss returns as `content`) |
 | `scripts/servers/vllm_20b.sh` | GPT-OSS-20B, one GPU, port 8126 |
 | `scripts/servers/embed_server.sh` | Qwen3-Embedding-4B, port 8888 (FinanceGym queries; same model as the corpus) |
 | `scripts/servers/pit_server.sh` | FinanceGym point-in-time search, port 8889 (CPU node, ~450 GB RAM) |
@@ -94,7 +94,7 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 
 | paper arm | `--mode` | `--K` |
 |---|---|---|
-| ReAct | `react` | 1 |
+| ReAct | `react` (FinanceGym: `baseline`, the official harness alone) | 1 |
 | refinement only | `refine` | 2 … 5 |
 | memory only | `memory` | 1 |
 | ReMo | `remo` | 1 … 5 (default 3) |
@@ -174,7 +174,7 @@ No local ground truth: `answers.jsonl` is e-mailed to the organizers (https://fi
 `gptoss120b-financeharness` (baseline, 31.9), `gptoss120b-financeharness-remo`, `gptoss120b-financeharness-adaremo`.
 
 1. Corpus (once, heavy): `benchmarks/financegym/corpus_pipeline/` — download → extract → embed → merge → `fg_finalize.sh`.
-2. Servers: `pit_server.sh` (`DATA=<corpus dir>`), `embed_server.sh`, `vllm_120b.sh`.
+2. Servers: `pit_server.sh` (`DATA=<corpus dir>`), `embed_server.sh`, `TOOLS=1 vllm_120b.sh` (tool-call parsing on).
 3. Runs, from `third_party/finance_harness` (the harness reads its `skills/` from the working directory):
    ```bash
    cd third_party/finance_harness

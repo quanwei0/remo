@@ -1,9 +1,12 @@
 #!/bin/bash
-# GPT-OSS-120B on 4 GPUs (tensor parallel). --enable-auto-tool-choice --tool-call-parser openai is REQUIRED by
-# FinanceHarness (OpenAI tool calling); without it every FinanceGym task returns an empty answer after 1 step.
-# AppWorld/Formula use plain chat completions and are unaffected by the flags.
-PORT=${PORT:-8125}; TP=${TP:-4}; UTIL=${UTIL:-0.92}
+# GPT-OSS-120B on 4 GPUs (tensor parallel).
+# TOOLS=1 adds --enable-auto-tool-choice --tool-call-parser openai, which FinanceHarness needs (OpenAI tool calling;
+# without it every FinanceGym task returns an empty answer after one step). Leave it OFF for Formula and AppWorld:
+# the paper's servers ran without it, and with the tool parser vLLM returns only the model's final channel as
+# `content` (without it, commentary and final channels are concatenated), which changes what the agent sees.
+PORT=${PORT:-8125}; TP=${TP:-4}; UTIL=${UTIL:-0.92}; TOOLS=${TOOLS:-0}
 export TIKTOKEN_RS_CACHE_DIR=${TIKTOKEN_RS_CACHE_DIR:-$HOME/.cache/tiktoken-rs-cache} TIKTOKEN_CACHE_DIR=${TIKTOKEN_CACHE_DIR:-$HOME/.cache/tiktoken-py}
 mkdir -p "$TIKTOKEN_RS_CACHE_DIR" "$TIKTOKEN_CACHE_DIR"   # a world-writable /tmp cache owned by another user breaks the harmony tokenizer
+TOOL_FLAGS=""; [ "$TOOLS" = "1" ] && TOOL_FLAGS="--enable-auto-tool-choice --tool-call-parser openai"
 exec vllm serve openai/gpt-oss-120b --served-model-name GPT-OSS-120B -tp "$TP" --port "$PORT" \
-  --max-model-len 131072 --gpu-memory-utilization "$UTIL" --enable-auto-tool-choice --tool-call-parser openai
+  --max-model-len 131072 --gpu-memory-utilization "$UTIL" ${TOOL_FLAGS}

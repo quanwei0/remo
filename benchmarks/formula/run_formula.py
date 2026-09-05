@@ -143,7 +143,9 @@ class FormulaAgent(ReMoAgent):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=MODES)
+    p.add_argument("--mode", required=True, choices=MODES,
+                   help="configurations of the ReMo loop: react = K=1, no memory; refine = refinement only: the ReMo loop "
+                        "without memory (K>=2); memory = K=1 with memory; remo = Alg. 1; adaremo = Alg. 2")
     p.add_argument("--K", type=int, default=None, help="round budget per question (default 3; react / memory are K=1 arms)")
     p.add_argument("--out", required=True, help="run dir (resumable)")
     p.add_argument("--limit", type=int, default=0, help="first N questions (0 = all)")
