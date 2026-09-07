@@ -1,6 +1,6 @@
 """AppWorld consolidators (the paper's `Consolidate`) for the sectioned playbook.
 
-CuratorConsolidator (default, what the paper's runs used): the consolidator prompt
+LLMConsolidator (default, what the paper's runs used): the consolidator prompt
 (prompts/consolidator/appworld.txt) with the admitted reflection, the whole playbook, the task
 instruction and the conversation history of the accepted attempt; the reply's ADD operations are
 appended as new bullets. The reflection stored is chosen as in the runs: for round1_clean the whole
@@ -31,15 +31,15 @@ def select_reflection(episode: EpisodeState) -> str:
     return VALIDATED_PREFIX + episode.rounds[-2].reflection.raw
 
 
-def build_curator_input(prompt: str, reflection: str, playbook_text: str, instruction: str, history: str) -> str:
+def build_consolidator_input(prompt: str, reflection: str, playbook_text: str, instruction: str, history: str) -> str:
     return prompt.format(initial_generated_code=SEE_HISTORY, final_generated_code=SEE_HISTORY, guidebook=reflection,
                          current_playbook=playbook_text, question_context=instruction, gt=None) + history
 
 
-class CuratorConsolidator:
+class LLMConsolidator:
     """`last_error` is "" after a successful call (even one adding nothing) and names the failure
     otherwise (transport error, unusable reply, unparseable playbook text); the playbook is then
-    unchanged and the runner records store_decision "curator_error"."""
+    unchanged and the runner records store_decision "consolidator_error"."""
 
     def __init__(self, llm, max_tokens: int = 8192, temperature: float = 0.0, log=print):
         self.llm, self.max_tokens, self.temperature, self.log = llm, max_tokens, temperature, log
@@ -52,11 +52,11 @@ class CuratorConsolidator:
         reflection = select_reflection(episode)
         if not reflection:                            # an empty critic reply: nothing to curate, no call
             return ""
-        content = build_curator_input(self.prompt, reflection, playbook.text, traj.meta.get("instruction", ""), traj.text)
+        content = build_consolidator_input(self.prompt, reflection, playbook.text, traj.meta.get("instruction", ""), traj.text)
         self.calls += 1
         try:
             reply = self.llm.chat([{"role": "user", "content": content}], self.max_tokens, self.temperature)
-            ops = playbook.parse_curator_response(reply)
+            ops = playbook.parse_ops_response(reply)
             if ops is None:
                 raise ValueError("unusable consolidator reply: " + (reply or "")[:200])
             return ",".join(playbook.apply_add_ops(ops))

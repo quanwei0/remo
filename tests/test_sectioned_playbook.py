@@ -75,30 +75,30 @@ class TestReinforce(unittest.TestCase):
         self.assertFalse(pb.reinforce("misc-00003"))
 
 
-class TestCuratorResponse(unittest.TestCase):
+class TestOpsResponse(unittest.TestCase):
     OK = '{"reasoning": "r", "operations": [{"type": "ADD", "section": "OTHERS", "content": "a"}]}'
 
     def test_valid_shapes(self):
         pb = SectionedPlaybook.from_skeleton("counts")
-        self.assertEqual(len(pb.parse_curator_response("Sure:\n```json\n" + self.OK + "\n```")), 1)
-        self.assertEqual(len(pb.parse_curator_response("note {x} " + self.OK + " }")), 1)
-        self.assertEqual(pb.parse_curator_response('{"reasoning": "r", "operations": []}'), [])
+        self.assertEqual(len(pb.parse_ops_response("Sure:\n```json\n" + self.OK + "\n```")), 1)
+        self.assertEqual(len(pb.parse_ops_response("note {x} " + self.OK + " }")), 1)
+        self.assertEqual(pb.parse_ops_response('{"reasoning": "r", "operations": []}'), [])
 
     def test_invalid(self):
         pb = SectionedPlaybook.from_skeleton("counts")
         for bad in ("garbage", "[1]", '{"operations": []}', '{"reasoning": "r", "operations": "x"}',
                     '{"reasoning": "r", "operations": [{"section": "OTHERS", "content": "a"}]}',
                     '{"reasoning": "r", "operations": [{"type": "ADD", "section": "OTHERS"}]}', ""):
-            self.assertIsNone(pb.parse_curator_response(bad), bad)
+            self.assertIsNone(pb.parse_ops_response(bad), bad)
 
     def test_other_operation_types_per_style(self):
         two = '{"reasoning": "r", "operations": [{"type": "UPDATE", "bullet_id": "x"}, {"type": "ADD", "section": "OTHERS", "content": "a"}]}'
-        self.assertEqual(len(SectionedPlaybook.from_skeleton("counts").parse_curator_response(two)), 1)
-        self.assertIsNone(SectionedPlaybook.from_skeleton("plain").parse_curator_response(two))
+        self.assertEqual(len(SectionedPlaybook.from_skeleton("counts").parse_ops_response(two)), 1)
+        self.assertIsNone(SectionedPlaybook.from_skeleton("plain").parse_ops_response(two))
 
     def test_plain_section_filter(self):
         pb = SectionedPlaybook.from_skeleton("plain")
-        ops = pb.parse_curator_response('{"reasoning": "r", "operations": [{"type": "ADD", "section": "Verification Checklist", "content": "v"},'
+        ops = pb.parse_ops_response('{"reasoning": "r", "operations": [{"type": "ADD", "section": "Verification Checklist", "content": "v"},'
                                         '{"type": "ADD", "section": "FORMULAS", "content": "dropped"}]}')
         self.assertEqual([o["content"] for o in ops], ["v"])
         self.assertEqual(pb.apply_add_ops(ops), ["vc-00001"])

@@ -2,7 +2,7 @@
 
 A prediction is correct iff float(pred.replace(",", "")) == float(target.replace(",", "")); when either side is
 not a number the strings must be equal (so the solver's "No final answer found" sentinel is wrong).
-final_results.json: accuracy, round-1 accuracy, gate distribution, store decisions (incl. curator_error), stop
+final_results.json: accuracy, round-1 accuracy, gate distribution, store decisions (incl. consolidator_error), stop
 reasons, mean rounds (len(rounds), failed rounds included), memory size (bullets / chars / tiktoken cl100k_base
 tokens), LLM call and token totals, per-formula and per-task breakdowns, learn/frozen segments.
 

@@ -1,6 +1,6 @@
 """AppWorld adapter: prompt files, message construction (template turns, first-block extraction, output
 wrapping, context trimming, retry injection), env_clean, critic input / parsing, reflection selection, the
-curator consolidator and the runner's records — fake model and fake world, no appworld package."""
+LLM consolidator and the runner's records — fake model and fake world, no appworld package."""
 import importlib.util
 import json
 import os
@@ -11,8 +11,8 @@ import unittest
 from unittest import mock
 
 from benchmarks.appworld import run_appworld as ra
-from benchmarks.appworld.consolidator import (CONSOLIDATOR_PROMPT_PATH, VALIDATED_PREFIX, CuratorConsolidator,
-                                              InsightConsolidator, build_curator_input, select_reflection)
+from benchmarks.appworld.consolidator import (CONSOLIDATOR_PROMPT_PATH, VALIDATED_PREFIX, InsightConsolidator,
+                                              LLMConsolidator, build_consolidator_input, select_reflection)
 from benchmarks.appworld.critic import CRITIC_PROMPT_PATHS, AppWorldCritic, EnvCritic, build_critic_input, parse_critic_reply
 from benchmarks.appworld.solver import (EMPTY_PLAYBOOK, NOT_SHOWN, REACT_MAX_OUTPUT_LENGTH, REACT_PROMPT_PATH, RETRY_INTRO,
                                         RETRY_USE, RETRY_USE_WITH_PLAYBOOK, SOLVER_PROMPT_PATH, TRIMMED, AppWorldSolver, ChatLLM,
@@ -235,17 +235,17 @@ class TestConsolidator(unittest.TestCase):
         self.assertEqual(select_reflection(self._episode("R1", "R2", "R3")), VALIDATED_PREFIX + "R2")
         self.assertTrue(VALIDATED_PREFIX.startswith("[VALIDATED BY RETRY: after applying this reflection in a retry, "))
 
-    def test_curator_input(self):
-        s = build_curator_input(read_prompt(CONSOLIDATOR_PROMPT_PATH), "REFL {x}", "PB {y}", "Pay {z}", "\n\nHIST")
+    def test_consolidator_input(self):
+        s = build_consolidator_input(read_prompt(CONSOLIDATOR_PROMPT_PATH), "REFL {x}", "PB {y}", "Pay {z}", "\n\nHIST")
         self.assertIn("`Pay {z}`", s); self.assertIn("`PB {y}`", s); self.assertIn("`REFL {x}`", s)
         self.assertIn('{\n  "reasoning": "[Your chain', s)                # the example braces are single after .format
         self.assertEqual(s.count("`See full conversation history below`"), 1); self.assertTrue(s.endswith("\n\nHIST"))
 
-    def test_curator_adds_bullets(self):
+    def test_consolidator_adds_bullets(self):
         pb = SectionedPlaybook.load(SEED, "plain")
         llm = FakeLLM(['{"reasoning": "r", "operations": [{"type": "ADD", "section": "verification_checklist", "content": "Check pages."},'
                        ' {"type": "ADD", "section": "no such", "content": "dropped"}]}'])
-        c = CuratorConsolidator(llm, log=lambda m: None)
+        c = LLMConsolidator(llm, log=lambda m: None)
         traj = Trajectory(text="\n\nHIST", completed=True, meta={"instruction": "Count playlists"})
         self.assertEqual(c.consolidate(pb, self._episode("R1", "R2"), {}, traj), "vc-00009")
         self.assertIn("## VERIFICATION CHECKLIST\n\n[vc-00009] Check pages.\n## TROUBLESHOOTING", pb.text)
@@ -258,16 +258,16 @@ class TestConsolidator(unittest.TestCase):
         self.assertEqual(c.consolidate(pb, self._episode("R1"), {}, traj), ""); self.assertEqual(c.last_error, "")
         self.assertEqual(c.consolidate(pb, self._episode(""), {}, traj), ""); self.assertEqual(c.calls, 2)
 
-    def test_curator_failures_leave_the_playbook_unchanged(self):
+    def test_consolidator_failures_leave_the_playbook_unchanged(self):
         traj = Trajectory(text="H", completed=True, meta={"instruction": "I"})
         for llm in (FakeLLM(["not json"]), FakeLLM(['{"reasoning": "r", "operations": [{"type": "UPDATE"}]}']), FakeLLM(fail=True)):
             pb = SectionedPlaybook.load(SEED, "plain"); before = pb.text
-            c = CuratorConsolidator(llm, log=lambda m: None)
+            c = LLMConsolidator(llm, log=lambda m: None)
             self.assertEqual(c.consolidate(pb, self._episode("R1"), {}, traj), "")
             self.assertTrue(c.last_error); self.assertEqual(pb.text, before); self.assertEqual(c.failures, 1)
         pb = SectionedPlaybook("stray line before the first header\n## OTHERS", "plain")   # apply raises KeyError
-        c = CuratorConsolidator(FakeLLM(['{"reasoning": "r", "operations": [{"type": "ADD", "section": "others", "content": "x"}]}']),
-                                log=lambda m: None)
+        c = LLMConsolidator(FakeLLM(['{"reasoning": "r", "operations": [{"type": "ADD", "section": "others", "content": "x"}]}']),
+                            log=lambda m: None)
         self.assertEqual(c.consolidate(pb, self._episode("R1"), {}, traj), ""); self.assertIn("KeyError", c.last_error)
 
     def test_insight_consolidator(self):
@@ -401,7 +401,7 @@ REFL_BAD = '{"trajectory_verdict": "errors_found", "refine": true, "store": fals
 REFL_OK = '{"trajectory_verdict": "no_errors", "confidence": 0.9, "refine": false, "store": true, "novelty_reason": "new", "key_insight": "L"}'
 REFL_DUP = '{"trajectory_verdict": "no_errors", "confidence": 0.9, "store": false, "novelty_reason": "covered by [psw-00007]", "key_insight": "L"}'
 REFL_LOW = '{"trajectory_verdict": "no_errors", "confidence": 0.5, "store": true, "novelty_reason": "covered by [psw-00007]", "key_insight": "L"}'
-CURATOR_OK = '{"reasoning": "r", "operations": [{"type": "ADD", "section": "others", "content": "New bullet."}]}'
+CONSOLIDATOR_OK = '{"reasoning": "r", "operations": [{"type": "ADD", "section": "others", "content": "New bullet."}]}'
 
 
 class TestVersions(unittest.TestCase):
@@ -427,13 +427,13 @@ class TestRecords(unittest.TestCase):
     def _agent(self, mode, K, solver, replies, cli_mode=None, **kw):
         llm = FakeLLM(replies)
         critic = EnvCritic() if mode == "react" else AppWorldCritic(llm, adaptive=(mode == "adaremo"))
-        cons = CuratorConsolidator(llm, log=lambda m: None)
+        cons = LLMConsolidator(llm, log=lambda m: None)
         agent = ra.AppWorldAgent(ra.make_config(mode, K), solver, critic, ra.load_playbook(SEED), cons,
                                  cli_mode=cli_mode or mode, run_dir=self.d, **kw)
         return agent, llm
 
     def test_cross_round_records_and_resume(self):
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [False, True]), [REFL_BAD, REFL_OK, CURATOR_OK])
+        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [False, True]), [REFL_BAD, REFL_OK, CONSOLIDATOR_OK])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"], rec["entry_id"], len(rec["rounds"])), ("cross_round_validated", "stored", "misc-00009", 2))
         self.assertIn("[misc-00009] New bullet.", agent.playbook.text)
@@ -458,7 +458,7 @@ class TestRecords(unittest.TestCase):
         self.assertEqual(agent2.done_indices(), {0}); self.assertEqual(len(agent2.playbook), 9)
 
     def test_round1_clean_stores_the_whole_reflection_and_reinforce(self):
-        agent, llm = self._agent("remo", 3, FakeSolver(self.misc, [True]), [REFL_OK, CURATOR_OK])
+        agent, llm = self._agent("remo", 3, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"]), ("round1_clean", "stored"))
         self.assertIn("`" + REFL_OK + "`", llm.requests[1][0]["content"])
@@ -468,11 +468,11 @@ class TestRecords(unittest.TestCase):
         self.assertIn("[psw-00007] Many APIs return items in \"pages\". Make sure to run through all the pages by looping over `page_index`. [confirmed x2]",
                       agent.playbook.text)
 
-    def test_curator_error_and_never_clean(self):
+    def test_consolidator_error_and_never_clean(self):
         agent, llm = self._agent("remo", 2, FakeSolver(self.misc, [True]), [REFL_OK, "garbage"])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
-        self.assertEqual(rec["store_decision"], "curator_error"); self.assertEqual(len(agent.playbook), 8)
-        self.assertEqual(ra.read_episodes(self.d)[0]["store_decision"], "curator_error")
+        self.assertEqual(rec["store_decision"], "consolidator_error"); self.assertEqual(len(agent.playbook), 8)
+        self.assertEqual(ra.read_episodes(self.d)[0]["store_decision"], "consolidator_error")
         agent, llm = self._agent("remo", 2, FakeSolver(self.misc, [False]), [REFL_BAD])
         rec = ra.run_task(agent, "t2", 1, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"], len(rec["rounds"]), len(llm.requests)), ("never_clean", "skipped", 2, 2))
@@ -493,22 +493,22 @@ class TestRecords(unittest.TestCase):
         agent.policy.frozen, agent.policy.store_window = True, [False] * 20
         rec = ra.run_task(agent, "t2", 19, self.d, log=lambda m: None)
         self.assertEqual((rec["store_decision"], agent.policy.frozen, agent.policy.store_window[-1], len(llm.requests)), ("skipped_lowconf", True, False, 1))
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_OK, CURATOR_OK])
+        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK])
         agent.policy.frozen, agent.policy.store_window = True, [False] * 17 + [True] * 3
         rec = ra.run_task(agent, "t3", 19, self.d, log=lambda m: None)                        # confident store: probe unfreezes
         self.assertEqual((rec["store_decision"], agent.policy.frozen, len(llm.requests)), ("stored", False, 2))
 
     def test_unparseable_verdict_follows_env_clean(self):
-        agent, _ = self._agent("remo", 2, FakeSolver(self.misc, [True]), ["no json", CURATOR_OK])
+        agent, _ = self._agent("remo", 2, FakeSolver(self.misc, [True]), ["no json", CONSOLIDATOR_OK])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["rounds"][0]["verdict"], rec["rounds"][0]["parsed"]), ("round1_clean", "correct", False))
         agent, _ = self._agent("remo", 2, FakeSolver(self.misc, [False]), ["no json"])
         self.assertEqual(ra.run_task(agent, "t2", 1, self.d, log=lambda m: None)["gate"], "never_clean")
 
     def test_freeze_after_reads_but_never_writes(self):
-        agent, llm = self._agent("adaremo", 1, FakeSolver(self.misc, [True]), [REFL_OK, CURATOR_OK, REFL_OK], freeze_after=1)
+        agent, llm = self._agent("adaremo", 1, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK, REFL_OK], freeze_after=1)
         ra.run_task(agent, "t0", 0, self.d, log=lambda m: None)      # index 0 < A: consolidates
-        ra.run_task(agent, "t1", 1, self.d, log=lambda m: None)      # index 1 >= A: read-only, no curator call
+        ra.run_task(agent, "t1", 1, self.d, log=lambda m: None)      # index 1 >= A: read-only, no consolidator call
         eps = ra.read_episodes(self.d)
         self.assertEqual([e["store_decision"] for e in eps], ["stored", "skipped_readonly"]); self.assertEqual(len(llm.requests), 3)
         self.assertEqual(len(agent.playbook), 9); self.assertTrue(agent.memory_readonly); self.assertFalse(eps[0]["memory_readonly"])

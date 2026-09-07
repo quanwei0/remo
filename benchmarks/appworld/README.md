@@ -14,8 +14,8 @@ the same API responses in the observations and the same unit tests in the scores
 | `Solve(task, M, ρ)` | `solver.AppWorldSolver`: a ReAct loop in a **fresh** `AppWorld(task_id, random_seed=123)` per round. Instruction messages = the arm's template rendered with jinja2 (task, supervisor, app descriptions, the whole playbook), split into USER / ASSISTANT turns, no system message: `prompts/solver/appworld.txt` (the paper's generator prompt, shows the playbook) for `memory` / `remo` / `adaremo`, `prompts/solver/appworld_react.txt` (AppWorld's official ReAct prompt, no playbook) for `react` / `refine`. Per step the first ```python block is executed (the reply is cut after it; a reply without a block executes `""`), the output comes back as `Output:` (20 000 chars, then `[REST NOT SHOWN FOR BREVITY]`), the context is trimmed at 400 000 chars (observations blanked first); `react` keeps AppWorld's plain scaffold limits instead (outputs uncapped, context trimmed at 50 000 chars). `--max-steps 40`, temperature 0, `max_tokens` 8192; execution timeout = AppWorld's 100 s + an outer 300 s guard. A retry injects ρ (the previous round's whole reflection) as three messages after the instructions. `completed` = task submitted **and** the last non-empty output has no `Execution failed` / `Traceback`. |
 | `Reflect` | `critic.AppWorldCritic`: one call with `prompts/critic/appworld_remo.txt` (ReMo) or `appworld_adaremo.txt` (AdaReMo) + the whole playbook (`(empty)` without memory) + the previous reflection (`N/A` in round 1) + the `=== FULL CONVERSATION HISTORY ===` block of the attempt. `trajectory_verdict` decides the verdict (unparseable → the env signal), `key_insight` is the lesson, `refine` / `store` / `novelty_reason` drive AdaReMo; a `store` with `confidence` < `--store-conf 0.7` is not honoured (nothing written or reinforced, no memory demand in the saturation window; `store_decision: skipped_lowconf`). No ground truth, no test results. `react` makes no critic call (`critic.EnvCritic`: the verdict is the env signal). |
 | memory `M` | `remo.SectionedPlaybook(style="plain")` — `## SECTION` headers, `[shr-00012] text` bullets — seeded from `initial_playbook.txt` (`--initial-playbook PATH`, `--no-initial-playbook` = empty skeleton), injected whole; reinforcement = the `[confirmed xN]` tag |
-| `Consolidate` | `consolidator.CuratorConsolidator` (default): `prompts/consolidator/appworld.txt` + the admitted reflection (round 1's, or the flipping round's behind `[VALIDATED BY RETRY: …]`) + playbook + task + history → ADD operations appended as bullets; a failed call / unusable reply leaves the playbook unchanged (`store_decision: curator_error`). `--consolidator append` = the `key_insight` as one OTHERS bullet, no call. |
-| Alg. 1 / 2 | `remo.ReMoAgent` (subclass `run_appworld.AppWorldAgent`: record fields, `curator_error`, the read-only phase of `--freeze-after`) |
+| `Consolidate` | `consolidator.LLMConsolidator` (default): `prompts/consolidator/appworld.txt` + the admitted reflection (round 1's, or the flipping round's behind `[VALIDATED BY RETRY: …]`) + playbook + task + history → ADD operations appended as bullets; a failed call / unusable reply leaves the playbook unchanged (`store_decision: consolidator_error`). `--consolidator append` = the `key_insight` as one OTHERS bullet, no call. |
+| Alg. 1 / 2 | `remo.ReMoAgent` (subclass `run_appworld.AppWorldAgent`: record fields, `consolidator_error`, the read-only phase of `--freeze-after`) |
 
 ## Setup (env `remo-agents`)
 
@@ -34,7 +34,7 @@ apps bundle sha256 `ed68e817…`), which `pyproject.toml` pins exactly, with dat
 at that revision fetches `data-0.1.0.bundle`; the PyPI release fetches the same file). The PyPI release `0.1.3.post1`
 and the later `0.2.0` data are *not* equivalent: the apps' responses differ (e.g. `spotify.search_songs` returns an
 `album_title` field at the pinned revision and not in the release), so from step 2 on every generator prompt — and the
-history the critic and the curator read — would diverge from the paper's; and `0.2.0` ships other base DBs and unit
+history the critic and the consolidator read — would diverge from the paper's; and `0.2.0` ships other base DBs and unit
 tests, so scores would not be comparable. `run_appworld.py` therefore refuses to start (`check_versions`) with another
 `appworld.__version__` or `data/version.txt`, and records both in `run_config.json`.
 
@@ -55,7 +55,7 @@ python $R --mode adaremo --K 2 --limit 1 --out runs/appworld/smoke --base-url $U
 
 - Flags: `--split` (default `test_normal`), `--limit N` (first N tasks in file order), `--K` (default 3;
   `react` / `memory` fix K=1), `--max-steps 40`, `--freeze-after A`, `--redundant-mode {reinforce,gate,off}`,
-  `--freeze-w 20 --freeze-rho 0.1 --probe-p 20`, `--store-conf 0.7`, `--consolidator {curator,append}`, `--initial-playbook PATH` /
+  `--freeze-w 20 --freeze-rho 0.1 --probe-p 20`, `--store-conf 0.7`, `--consolidator {llm,append}`, `--initial-playbook PATH` /
   `--no-initial-playbook`, `--max-tokens 8192` / `--critic-max-tokens 8192` / `--consolidator-max-tokens 8192`,
   `--temperature 0`, `--random-seed 123`, `--exec-timeout 100` / `--guard-timeout 300`, `--llm-timeout-s 600`,
   `--llm-attempts 50`, `--experiment-name` (default: basename of `--out`), `--root` (default `$APPWORLD_ROOT`),
@@ -74,7 +74,7 @@ python $R --mode adaremo --K 2 --limit 1 --out runs/appworld/smoke --base-url $U
 - `RUN_DIR/episodes.jsonl` — per task: `task_index`, `task_id`, `gate`, `stop_reason`, `rounds[]` (critic fields,
   `raw` reply, `solver` = steps / task_completed / env_clean / error / elapsed, `critic` = confidence / parsed),
   `store_decision` (`stored`, `reinforced`, `discarded`, `skipped`, `skipped_frozen`, `skipped_lowconf`,
-  `curator_error`, `skipped_readonly`, `no_memory`), `entry_id`, `memory_readonly`, `playbook_entries`,
+  `consolidator_error`, `skipped_readonly`, `no_memory`), `entry_id`, `memory_readonly`, `playbook_entries`,
   `playbook_chars`. A round whose `store` the confidence gate removed keeps the critic's own `store` /
   `novelty_reason` (`critic.low_confidence`).
 - `RUN_DIR/trajs/<task_id>.json` — every round's trimmed messages, steps (reply / code / output), critic raw reply.

@@ -3,6 +3,8 @@
 Arms are configurations of the one loop (remo.ReMoAgent):
   --mode react    remo, K=1, no memory          --mode refine  remo, K>1, no memory
   --mode memory   remo, K=1, memory             --mode remo    Alg. 1        --mode adaremo  Alg. 2
+The K=1 arms still run the critic; with no retry its verdict only drives the outcome gate, so `memory` is exactly
+`remo --K 1` (memory without refinement) and `react` is that arm with the memory switched off.
 
 Run dir (resumable): episodes.jsonl (one line per finished question; present indices are skipped), trajs.jsonl
 (full replies), playbook.txt, policy_state.json, run_config.json and, at the end, final_results.json.
@@ -21,8 +23,8 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from benchmarks.formula.consolidator import (CURATOR_MAX_TOKENS, TOKEN_BUDGET, AppendConsolidator,    # noqa: E402
-                                             CuratorConsolidator)
+from benchmarks.formula.consolidator import (CONSOLIDATOR_MAX_TOKENS, TOKEN_BUDGET,                   # noqa: E402
+                                             AppendConsolidator, LLMConsolidator)
 from benchmarks.formula.critic import CRITIC_MAX_TOKENS, FormulaCritic                               # noqa: E402
 from benchmarks.formula.data import (DEFAULT_DATA_PATH, MANIFEST_PATH, check_against_manifest,     # noqa: E402
                                      file_sha256, load_rows, make_task, read_manifest)
@@ -80,9 +82,9 @@ class ReadOnlyPlaybook:
 
 class FormulaAgent(ReMoAgent):
     """remo.ReMoAgent plus (a) per-round answers / usage / full replies persisted with the episode, the final
-    answer taken from the last round whose solver and critic both ran (as the paper's runs did), the curator's
-    outcome (a failed curator call or an unusable reply -> store_decision "curator_error") and (b) the read-only
-    memory phase of --freeze-after (task_index >= A: the playbook is read but never written, no curator call, and
+    answer taken from the last round whose solver and critic both ran (as the paper's runs did), the consolidator's
+    outcome (a failed consolidator call or an unusable reply -> store_decision "consolidator_error") and (b) the read-only
+    memory phase of --freeze-after (task_index >= A: the playbook is read but never written, no consolidator call, and
     the policy's saturation state stays as it was after task A-1; the record says store_decision="skipped_readonly")."""
 
     def __init__(self, cfg, solver, critic, playbook=None, consolidator=None, run_dir=None, freeze_after=None):
@@ -126,7 +128,7 @@ class FormulaAgent(ReMoAgent):
                                "completion_tokens": sum(int(x.get("completion_tokens", 0)) for x in cu),
                                "outcome": cu[-1].get("outcome", "") if cu else ""}
         if rec["store_decision"] == "stored" and rec["consolidator"]["outcome"].endswith("_error"):
-            rec["store_decision"] = "curator_error"
+            rec["store_decision"] = "consolidator_error"
         rec["formula"] = (self._task or {}).get("formula", "")
         rec["memory_readonly"] = self._readonly
         if self._readonly:
@@ -156,14 +158,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="AdaReMo: what happens to a lesson the critic judges already covered")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="consolidate on the first A questions, then run with the memory read-only")
-    p.add_argument("--consolidator", default="curator", choices=["curator", "append"])
+    p.add_argument("--consolidator", default="llm", choices=["llm", "append"],
+                   help="llm = the consolidator model call of the paper's runs (may add 0..n playbook "
+                        "bullets); append = store the accepting round's lesson verbatim, no model call")
     p.add_argument("--freeze-w", type=int, default=20)
     p.add_argument("--freeze-rho", type=float, default=0.1)
     p.add_argument("--probe-p", type=int, default=20)
-    p.add_argument("--token-budget", type=int, default=TOKEN_BUDGET, help="token budget quoted to the curator")
+    p.add_argument("--token-budget", type=int, default=TOKEN_BUDGET, help="token budget quoted to the consolidator")
     p.add_argument("--max-tokens", type=int, default=SOLVER_MAX_TOKENS, help="solver max_tokens")
     p.add_argument("--critic-max-tokens", type=int, default=CRITIC_MAX_TOKENS)
-    p.add_argument("--consolidator-max-tokens", type=int, default=CURATOR_MAX_TOKENS)
+    p.add_argument("--consolidator-max-tokens", type=int, default=CONSOLIDATOR_MAX_TOKENS)
     p.add_argument("--timeout-s", type=float, default=600.0, help="per-request timeout")
     p.add_argument("--skip-health", action="store_true", help="do not check that --model is served before starting")
     return p
@@ -213,9 +217,9 @@ def main(argv=None) -> int:
             raise SystemExit(f"model {args.model!r} not served at {args.base_url}: {served}")
     solver = FormulaSolver(llm, max_tokens=args.max_tokens)
     critic = FormulaCritic(llm, adaptive=cfg.adaptive, max_tokens=args.critic_max_tokens)
-    consolidator = (CuratorConsolidator(llm, len(rows), cfg.adaptive, token_budget=args.token_budget,
-                                        max_tokens=args.consolidator_max_tokens)
-                    if args.consolidator == "curator" else AppendConsolidator())
+    consolidator = (LLMConsolidator(llm, len(rows), cfg.adaptive, token_budget=args.token_budget,
+                                    max_tokens=args.consolidator_max_tokens)
+                    if args.consolidator == "llm" else AppendConsolidator())
     agent = FormulaAgent(cfg, solver, critic, SectionedPlaybook.from_skeleton("counts"), consolidator, run_dir=args.out,
                          freeze_after=args.freeze_after)
 
@@ -241,7 +245,7 @@ def main(argv=None) -> int:
 
     res = write_final_results(args.out, rows, {**config, "elapsed_s": round(time.time() - t_run, 1)})
     _log("[final] " + summary_line(res) + f" solver_failures={solver.failures} critic_parse_failures={critic.parse_failures} "
-         f"critic_call_failures={critic.call_failures} curator_failures={getattr(consolidator, 'failures', 0)}")
+         f"critic_call_failures={critic.call_failures} consolidator_failures={getattr(consolidator, 'failures', 0)}")
     return 130 if interrupted else 0
 
 

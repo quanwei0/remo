@@ -295,7 +295,7 @@ class SectionedPlaybook:
         self._text, new_ids = _apply_add_ops(self._text, ops, self.next_id, self.style)
         return new_ids
 
-    def parse_curator_response(self, text: str) -> list[dict] | None:
+    def parse_ops_response(self, text: str) -> list[dict] | None:
         """The ADD operations of a consolidator reply {"reasoning": str, "operations": [...]} —
         validated as in the paper's runs — or None when the reply is not usable. Style "counts"
         tolerates other operation types (never applied); style "plain" rejects the reply on any

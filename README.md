@@ -29,7 +29,7 @@ tests/                         unit tests: Algorithm 1/2 semantics, the three ad
 - `remo/` has no benchmark code and never sees ground truth; each `benchmarks/<name>/` plugs in a solver, a critic, a
   consolidator, a data loader and a post-hoc scorer, and reads its prompts from `prompts/` at import time: solver prompts
   for Formula and AppWorld (`appworld_react.txt` = AppWorld's official ReAct prompt, used by the no-memory arms), critic
-  prompts per benchmark and arm (`*_remo.txt` / `*_adaremo.txt`; FinanceGym has one for both), curator prompts for Formula
+  prompts per benchmark and arm (`*_remo.txt` / `*_adaremo.txt`; FinanceGym has one for both), consolidator prompts for Formula
   and AppWorld. FinanceGym's solver prompt is the harness's own, and it has no consolidator prompt (lessons are appended verbatim).
 - Paper ↔ code: `Solve` = `Solver.solve(task, M, ρ)` · `Reflect` = `Critic.reflect` → `Reflection(v, ρ, g_ref, g_sto)` ·
   `completed(τ)` = `Trajectory.completed` · gate / `admitted` = `RemoPolicy` · `Consolidate` = append-only `Consolidator` ·
@@ -43,7 +43,7 @@ Two environments (the benchmarks' dependencies conflict):
 git clone https://github.com/quanwei0/remo.git && cd remo
 # Formula + AppWorld
 conda create -y -n remo-agents python=3.12 && conda activate remo-agents
-git lfs install && pip install -e ".[agents]" && appworld install   # appworld at the paper's revision (git-lfs bundles)
+git lfs install && pip install -e ".[agents]" && appworld install
 # FinanceGym
 conda create -y -n remo-financegym python=3.12 && conda activate remo-financegym
 pip install -e ".[financegym]" && pip install -e third_party/finance_harness
@@ -65,12 +65,13 @@ python -m unittest discover -s tests
 
 Every runner talks to an OpenAI-compatible chat endpoint: `--base-url`, `--model`, key in `REMO_API_KEY` (default `EMPTY`).
 
-**Local vLLM (paper setting: gpt-oss-120b / 20b)**
+**Local vLLM servers** (the paper's runs used gpt-oss-120b / 20b as the agent model, temperature 0; the embedding server below is part of the FinanceGym retrieval stack, not an agent model)
 
 | script | serves |
 |---|---|
 | `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, TP=4, port 8125. `TOOLS=1` adds the tool-call parser FinanceGym needs; Formula and AppWorld run **without** it (paper setting — the parser changes what gpt-oss returns as `content`) |
 | `scripts/servers/vllm_20b.sh` | GPT-OSS-20B, one GPU, port 8126 |
+| `scripts/servers/vllm_qwen35_27b.sh` | Qwen3.5-27B, TP=4 (`TP=2` fits too), port 8127, thinking disabled — the model used for the extra runs reported outside the paper's tables |
 | `scripts/servers/embed_server.sh` | Qwen3-Embedding-4B, port 8888 (FinanceGym queries; same model as the corpus) |
 | `scripts/servers/pit_server.sh` | FinanceGym point-in-time search, port 8889 (CPU node, ~450 GB RAM) |
 
@@ -94,15 +95,22 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 
 | paper arm | `--mode` | `--K` |
 |---|---|---|
-| ReAct | `react` (FinanceGym: `baseline`, the official harness alone) | 1 |
+| ReAct | `react` | 1 |
 | refinement only | `refine` | 2 … 5 |
 | memory only | `memory` | 1 |
 | ReMo | `remo` | 1 … 5 (default 3) |
-| AdaReMo | `adaremo` (`--redundant-mode gate` for the ablation) | 1 … 5 |
+| AdaReMo | `adaremo` | 1 … 5 |
 
+- FinanceGym has no `react`: its ReAct arm is `baseline`, the official harness on its own (the leaderboard entry);
+  every other arm wraps that same harness.
+- `--redundant-mode` (AdaReMo only): `reinforce` (default, `helpful+1` on the cited entry), `gate` (drop the covered
+  lesson) or `off` (store it anyway) — the redundancy ablation.
+- `memory` is `remo` with `--K 1`. The K=1 arms still call the critic: with no retry its verdict only feeds the
+  outcome gate, so `react` records a verdict and writes nothing, `memory` writes the lesson of every admitted
+  episode, and `remo --K 3` adds the retry loop on top of `memory` — the two arms isolate memory and refinement.
 - Replicates: five independent runs per cell (`r1` … `r5`), launched concurrently against one server — never copied run directories.
 - `--freeze-after A`: consolidate on the first *A* tasks, then run with the memory read-only (learn-then-freeze, RQ3).
-- Consolidation: Formula and AppWorld default to `--consolidator curator` — the curator model call of the paper's runs
+- Consolidation: Formula and AppWorld default to `--consolidator llm` — the consolidator model call of the paper's runs
   (`prompts/consolidator/<benchmark>.txt`), which may add 0 … n playbook bullets; `append` stores the accepting round's
   key insight as one bullet, no call. FinanceGym has no such flag: the lesson is appended verbatim.
 - Memory: Formula / AppWorld a sectioned markdown playbook (bullets `[calc-00012] helpful=0 harmful=0 :: text` /
@@ -111,7 +119,7 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
   30 000-char cap ranked by (`-helpful`, line).
 - Failures: a failed solver or critic call ends the episode (not admitted; the round counts); an unparseable critic reply
   is read as in the original run (Formula: `no_errors` iff that literal occurs; AppWorld: the environment signal;
-  FinanceGym: `no_errors`, no lesson); a failed or unusable curator call leaves the playbook unchanged (`curator_error`).
+  FinanceGym: `no_errors`, no lesson); a failed or unusable consolidator call leaves the playbook unchanged (`consolidator_error`).
 - Mean rounds = `len(rounds)`: a failed generation still spends a round.
 - Runs resume from `episodes.jsonl`; a run directory refuses a different `--mode` or `--K` (plus, per runner, its other
   locked settings: Formula the model and data file, AppWorld the split and seed playbook, FinanceGym `--freeze-after`).
@@ -137,8 +145,8 @@ done; wait
 ```
 
 - Correct iff the prediction equals the reference as a float (commas stripped).
-- Solver, critic and curator: one user message, temperature 0, `max_tokens` 8192 each (`--max-tokens`, `--critic-max-tokens`,
-  `--consolidator-max-tokens`); `--token-budget 80000` quoted to the curator; `--consolidator curator|append`.
+- Solver, critic and consolidator: one user message, temperature 0, `max_tokens` 8192 each (`--max-tokens`, `--critic-max-tokens`,
+  `--consolidator-max-tokens`); `--token-budget 80000` quoted to the consolidator; `--consolidator llm|append`.
 - 20B rows: `--model GPT-OSS-20B` against the 20B server. Learn-then-freeze: `--freeze-after 100`.
 - `prepare_data.py --from-file PATH` converts a local copy; all 200 manifest hashes must match.
 - `scoring.py RUN_DIR --data …` rescores a finished run. Details: `benchmarks/formula/README.md`.
@@ -157,8 +165,8 @@ python benchmarks/appworld/run_appworld.py --mode adaremo --K 3 --split test_nor
 - Prompts: `memory` / `remo` / `adaremo` render the paper's generator prompt (`prompts/solver/appworld.txt`, shows the
   playbook); `refine` and `react` render AppWorld's official ReAct prompt (`appworld_react.txt`), `react` in the plain
   scaffold without a critic call.
-- Solver, critic and curator: `--temperature 0`, `max_tokens` 8192 each (`--max-tokens`, `--critic-max-tokens`,
-  `--consolidator-max-tokens`), world seed `--random-seed 123`; `--consolidator curator|append`; seed playbook
+- Solver, critic and consolidator: `--temperature 0`, `max_tokens` 8192 each (`--max-tokens`, `--critic-max-tokens`,
+  `--consolidator-max-tokens`), world seed `--random-seed 123`; `--consolidator llm|append`; seed playbook
   `--initial-playbook PATH` (default `benchmarks/appworld/initial_playbook.txt`) / `--no-initial-playbook`; AdaReMo
   stores only with `confidence` ≥ `--store-conf 0.7`.
 - Scoring is post hoc with AppWorld's unit tests (`appworld.evaluator.evaluate_task`, = `appworld evaluate <name> test_normal --root $APPWORLD_ROOT`):

@@ -201,7 +201,7 @@ class TestSectionedPlaybookInTheLoop(unittest.TestCase):
 
     class AddConsolidator:
         def consolidate(self, playbook, episode, task, traj):
-            ops = playbook.parse_curator_response('{"reasoning": "r", "operations": [{"type": "ADD", "section": "OTHERS", "content": "%s"}]}'
+            ops = playbook.parse_ops_response('{"reasoning": "r", "operations": [{"type": "ADD", "section": "OTHERS", "content": "%s"}]}'
                                                   % episode.lesson())
             return ",".join(playbook.apply_add_ops(ops))
 

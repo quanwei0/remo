@@ -3,7 +3,9 @@ questions, no local ground truth — the organizers grade the submitted reports.
 
 Arms (--mode): baseline = the official FinanceHarness alone (one attempt, no critic, no memory — the
 leaderboard entry and the ReAct arm of this benchmark); the other arms wrap the same harness: refine (K>1,
-no memory), memory (K=1, memory), remo (Algorithm 1), adaremo (Algorithm 2). --freeze-after A consolidates on the first A tasks and runs the
+no memory), memory (K=1 with memory, i.e. remo --K 1), remo (Algorithm 1), adaremo (Algorithm 2). The arms with a
+critic still call it at K=1; with no retry its verdict only drives the outcome gate, so memory isolates the memory
+from the refinement loop. --freeze-after A consolidates on the first A tasks and runs the
 rest with the memory read-only (they wait until the A learning tasks have finished).
 
 The FinanceHarness solver is async and 8 tasks run concurrently, while remo.ReMoAgent.run_task is

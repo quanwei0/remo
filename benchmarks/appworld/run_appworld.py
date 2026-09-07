@@ -1,9 +1,11 @@
 """ReMo / AdaReMo on AppWorld (the `appworld` package at the revision pinned in pyproject.toml, data 0.1.0;
 `test_normal` = 168 tasks / 56 scenarios).
 
-Arms:  --mode react (K=1, no memory) | refine (K>1, no memory) | memory (K=1) | remo | adaremo.
+Arms:  --mode react (K=1, no memory) | refine (K>1, no memory) | memory (K=1, = remo --K 1) | remo | adaremo.
+The K=1 arms still call the critic; without a retry its verdict only drives the outcome gate (react writes nothing,
+memory writes the lesson of every admitted episode).
 The loop is remo.ReMoAgent (Algorithms 1/2) over AppWorldSolver (a fresh world per round, the previous
-reflection injected into the retry), AppWorldCritic and CuratorConsolidator; memory is a
+reflection injected into the retry), AppWorldCritic and LLMConsolidator; memory is a
 remo.SectionedPlaybook (style "plain") seeded from benchmarks/appworld/initial_playbook.txt and injected
 whole. The memory arms render the paper's generator prompt; the no-memory arms render AppWorld's official
 ReAct prompt as the paper's baselines did, and react is AppWorld's plain ReAct scaffold (no critic call,
@@ -36,7 +38,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:                        # works from a checkout without `pip install -e`
     sys.path.insert(0, _REPO)
 
-from benchmarks.appworld.consolidator import CuratorConsolidator, InsightConsolidator     # noqa: E402
+from benchmarks.appworld.consolidator import InsightConsolidator, LLMConsolidator          # noqa: E402
 from benchmarks.appworld.critic import AppWorldCritic, EnvCritic                           # noqa: E402
 from benchmarks.appworld.solver import (REACT_MAX_OUTPUT_LENGTH, REACT_PROMPT_PATH,        # noqa: E402
                                         SOLVER_PROMPT_PATH, AppWorldSolver, ChatLLM)
@@ -134,7 +136,7 @@ SOLVER_KEYS = ("steps", "task_completed", "env_clean", "error", "elapsed_s", "me
 class AppWorldAgent(ReMoAgent):
     """ReMoAgent plus (a) task_id, the CLI arm, per-round solver / critic stats in the saved record (a
     round whose store the critic's confidence gate removed keeps the critic's own store / novelty_reason /
-    cited_id), (b) store_decision "curator_error" when the consolidator call failed (playbook unchanged),
+    cited_id), (b) store_decision "consolidator_error" when the consolidator call failed (playbook unchanged),
     "skipped_lowconf" when the gate removed the store of the accepting round, and (c) the read-only phase
     of --freeze-after (task_index >= A: the playbook is injected but nothing is added or reinforced, no
     consolidator call, and the saturation window stays as it was after A-1)."""
@@ -177,7 +179,7 @@ class AppWorldAgent(ReMoAgent):
             if rec["store_decision"] not in ("skipped", "no_memory"):
                 rec["store_decision"], rec["entry_id"] = "skipped_readonly", ""
         elif rec["store_decision"] == "stored" and self.consolidator.last_error:
-            rec["store_decision"] = "curator_error"
+            rec["store_decision"] = "consolidator_error"
         elif rec["store_decision"] == "discarded" and len(critic) == len(rec["rounds"]) and "low_confidence" in critic[-1]:
             rec["store_decision"] = "skipped_lowconf"
         rec["playbook_entries"], rec["playbook_chars"] = len(self.playbook), self.playbook.chars()
@@ -329,7 +331,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store-conf", type=float, default=0.7, help="adaremo: a store the critic asserts with lower confidence is skipped")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="learn-then-freeze: consolidate on the first A tasks, then run with the memory read-only")
-    p.add_argument("--consolidator", default="curator", choices=["curator", "append"])
+    p.add_argument("--consolidator", default="llm", choices=["llm", "append"],
+                   help="llm = the consolidator model call of the paper's runs (may add 0..n playbook "
+                        "bullets); append = store the accepting round's lesson verbatim, no model call")
     p.add_argument("--initial-playbook", default=INITIAL_PLAYBOOK_PATH, help="seed playbook file")
     p.add_argument("--no-initial-playbook", action="store_true", help="start from the empty section skeleton")
     p.add_argument("--max-steps", type=int, default=40, help="REPL steps per round")
@@ -409,8 +413,8 @@ def main(argv=None) -> int:
         critic = (EnvCritic() if args.mode == "react" else
                   AppWorldCritic(llm, adaptive=cfg.adaptive, max_tokens=args.critic_max_tokens,
                                  temperature=args.temperature, store_conf=args.store_conf, log=_log))
-        consolidator = (CuratorConsolidator(llm, max_tokens=args.consolidator_max_tokens, temperature=args.temperature, log=_log)
-                        if args.consolidator == "curator" else InsightConsolidator())
+        consolidator = (LLMConsolidator(llm, max_tokens=args.consolidator_max_tokens, temperature=args.temperature, log=_log)
+                        if args.consolidator == "llm" else InsightConsolidator())
         agent = AppWorldAgent(cfg, solver, critic, load_playbook(initial_playbook), consolidator, cli_mode=args.mode,
                               run_dir=args.out, freeze_after=args.freeze_after)
         done = agent.done_indices()

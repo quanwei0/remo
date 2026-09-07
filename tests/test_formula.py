@@ -1,4 +1,4 @@
-"""Formula adapter: question parsing, prompt files, answer extraction, critic parsing, the curator consolidator,
+"""Formula adapter: question parsing, prompt files, answer extraction, critic parsing, the LLM consolidator,
 lesson text, scoring, manifest selection and the runner (fake LLM, no model, no network)."""
 import json
 import os
@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from benchmarks.formula import run_formula as rf
-from benchmarks.formula.consolidator import AppendConsolidator, CuratorConsolidator, lesson_text
+from benchmarks.formula.consolidator import AppendConsolidator, LLMConsolidator, lesson_text
 from benchmarks.formula.critic import EMPTY_PLAYBOOK, NO_PRIOR, FormulaCritic, build_critic_prompt
 from benchmarks.formula.data import (ANSWER_FORMAT, check_against_manifest, formula_name, load_rows, make_task,
                                      normalize_row, parse_question, row_hash, select_by_manifest, write_rows)
@@ -19,7 +19,7 @@ from remo.policy import EpisodeState, RoundRecord
 CTX = ('Use formula Operating Margin to answer the question. Answer with a numerical answer with 2 decimal places. '
        'Formula: Operating Margin = (Operating Income / Revenue) × 100. Question:  "For a business with revenue of '
        '$300,000 and Operating Income of $45,000, find the Operating Margin.". Answer:')
-CURATOR_REPLY = json.dumps({"reasoning": "r", "operations": [
+CONSOLIDATOR_REPLY = json.dumps({"reasoning": "r", "operations": [
     {"type": "ADD", "section": "formulas_and_calculations", "content": "Operating margin = operating income / revenue x 100."},
     {"type": "UPDATE", "bullet_id": "calc-00001"}]})
 
@@ -33,11 +33,11 @@ def _task(i=0):
 
 
 class FakeLLM:
-    """Routes by prompt: critic prompts get a JSON reflection, curator prompts a curator reply, solver prompts the
-    JSON reply the solver prompt asks for. Optionally fails the first solver call (transport error)."""
+    """Routes by prompt: critic prompts get a JSON reflection, consolidator prompts a consolidator reply, solver
+    prompts the JSON reply the solver prompt asks for. Optionally fails the first solver call (transport error)."""
 
-    def __init__(self, answer="15.0", critic=None, fail_first_solver=False, curator=CURATOR_REPLY):
-        self.answer, self.fail_first_solver, self.curator = answer, fail_first_solver, curator
+    def __init__(self, answer="15.0", critic=None, fail_first_solver=False, consolidator=CONSOLIDATOR_REPLY):
+        self.answer, self.fail_first_solver, self.consolidator = answer, fail_first_solver, consolidator
         self.critic = critic or {"checks": "ok", "verdict": "no_errors", "critique": "fine", "refine": False, "store": True,
                                  "novelty_reason": "not covered", "key_insight": "Multiply margins by 100."}
         self.prompts = []
@@ -51,8 +51,8 @@ class FakeLLM:
         if "financial-reasoning reviewer" in prompt:
             c = self.critic(prompt) if callable(self.critic) else self.critic
             return json.dumps(c), usage
-        if "master curator of knowledge" in prompt:
-            return self.curator, usage
+        if "identify what new insights" in prompt:
+            return self.consolidator, usage
         if self.fail_first_solver:
             self.fail_first_solver = False
             raise ConnectionError("boom")
@@ -108,9 +108,9 @@ class TestPrompts(unittest.TestCase):
         self.assertIn("**Round:** 2 of at most 3\n**Previous reviewer critique (if this is a retry):**\nold {critique}\n", p)
         self.assertIn(f"already has):**\n{EMPTY_PLAYBOOK}\n", p)
 
-    def test_curator_prompt(self):
+    def test_consolidator_prompt(self):
         pb = SectionedPlaybook.from_skeleton("counts")
-        cons = CuratorConsolidator(FakeLLM(), n_tasks=200, adaptive=True)
+        cons = LLMConsolidator(FakeLLM(), n_tasks=200, adaptive=True)
         st = EpisodeState(admitted=True, stop_reason="accepted")
         st.rounds.append(RoundRecord(1, True, Reflection("correct", critique="c", lesson="k", novelty_reason="n")))
         p = cons.build_prompt(pb, st, _task(4))
@@ -193,25 +193,25 @@ class TestConsolidator(unittest.TestCase):
         self.assertTrue(lesson_text(self._episode(2), True).startswith("[validated: cross_round_validated] The final answer "
                                                                        "passed independent review after 2 rounds of refinement. "))
 
-    def test_curator_adds_and_fails(self):
+    def test_consolidator_adds_and_fails(self):
         pb = SectionedPlaybook.from_skeleton("counts")
-        cons = CuratorConsolidator(FakeLLM(), n_tasks=3, adaptive=False)
+        cons = LLMConsolidator(FakeLLM(), n_tasks=3, adaptive=False)
         self.assertEqual(cons.consolidate(pb, self._episode(1), _task(), None), "calc-00001")
         self.assertIn("## FORMULAS & CALCULATIONS\n\n[calc-00001] helpful=0 harmful=0 :: Operating margin", pb.text)
         self.assertEqual(cons.drain()[0]["outcome"], "added")
-        cons = CuratorConsolidator(FakeLLM(curator='{"reasoning": "r", "operations": []}'), n_tasks=3, adaptive=False)
+        cons = LLMConsolidator(FakeLLM(consolidator='{"reasoning": "r", "operations": []}'), n_tasks=3, adaptive=False)
         self.assertEqual(cons.consolidate(pb, self._episode(1), _task(), None), "")
         self.assertEqual(cons.drain()[0]["outcome"], "no_ops")
         before = pb.text
-        cons = CuratorConsolidator(FakeLLM(curator="not json"), n_tasks=3, adaptive=False)
+        cons = LLMConsolidator(FakeLLM(consolidator="not json"), n_tasks=3, adaptive=False)
         self.assertEqual(cons.consolidate(pb, self._episode(1), _task(), None), "")
         self.assertEqual((cons.drain()[0]["outcome"], cons.failures, pb.text), ("parse_error", 1, before))
         def boom(prompt, max_tokens): raise ConnectionError("x")
-        cons = CuratorConsolidator(boom, n_tasks=3, adaptive=False)
+        cons = LLMConsolidator(boom, n_tasks=3, adaptive=False)
         self.assertEqual(cons.consolidate(pb, self._episode(1), _task(), None), "")
         self.assertEqual((cons.drain()[0]["outcome"], pb.text), ("llm_error", before))
         broken = SectionedPlaybook("stray line before any header\n## OTHERS", "counts")
-        cons = CuratorConsolidator(FakeLLM(), n_tasks=3, adaptive=False)
+        cons = LLMConsolidator(FakeLLM(), n_tasks=3, adaptive=False)
         self.assertEqual(cons.consolidate(broken, self._episode(1), _task(), None), "")
         self.assertEqual(cons.drain()[0]["outcome"], "apply_error")
 
@@ -292,7 +292,7 @@ class TestRunner(unittest.TestCase):
         d = tempfile.mkdtemp()
         llm = FakeLLM()
         cfg = RemoConfig(mode="adaremo", K=2)
-        agent = self._agent(llm, cfg, d, CuratorConsolidator(llm, 4, True), freeze_after=2)
+        agent = self._agent(llm, cfg, d, LLMConsolidator(llm, 4, True), freeze_after=2)
         recs, learn_state = [], None
         for i, r in enumerate(_rows(4)):
             recs.append(agent.run_task(make_task(i, r), i))
@@ -306,7 +306,7 @@ class TestRunner(unittest.TestCase):
             self.assertTrue(r["memory_readonly"]); self.assertEqual(r["store_decision"], "skipped_readonly")
             self.assertEqual(r["entry_id"], ""); self.assertGreater(r["memory_chars_at_start"], 0)
         self.assertEqual(len(agent.playbook), 2); self.assertIsInstance(agent.playbook, SectionedPlaybook)
-        self.assertEqual(len(llm.prompts), 4 * 2 + 2)                       # no curator call in the read-only phase
+        self.assertEqual(len(llm.prompts), 4 * 2 + 2)                       # no consolidator call in the read-only phase
         self.assertEqual(recs[2]["formula"], "Operating Margin")
         self.assertEqual(learn_state["store_window"], [True, True])
         self.assertEqual(agent.policy.state(), learn_state)             # read-only phase: no saturation bookkeeping
@@ -319,7 +319,7 @@ class TestRunner(unittest.TestCase):
         self.assertEqual(agent2.done_indices(), {0, 1, 2, 3}); self.assertEqual(agent2.playbook.text, agent.playbook.text)
         self.assertEqual(agent2.playbook.next_id, 3)
 
-    def test_reinforce_retry_and_curator_error(self):
+    def test_reinforce_retry_and_consolidator_error(self):
         d = tempfile.mkdtemp()
         calls = {"n": 0}
         def critic(prompt):
@@ -331,25 +331,25 @@ class TestRunner(unittest.TestCase):
             return {"verdict": "no_errors", "critique": "ok", "refine": False, "store": False,
                     "novelty_reason": "covered by calc-00001 and calc-99999", "key_insight": "k"}
         llm = FakeLLM(critic=critic)
-        agent = self._agent(llm, RemoConfig(mode="adaremo", K=3), d, CuratorConsolidator(llm, 3, True))
+        agent = self._agent(llm, RemoConfig(mode="adaremo", K=3), d, LLMConsolidator(llm, 3, True))
         rec = agent.run_task(_task(0), 0)
         self.assertEqual((rec["gate"], len(rec["rounds"]), rec["store_decision"], rec["entry_id"]), ("cross_round_validated", 2, "stored", "calc-00001"))
         self.assertIn(RETRY_REFLECTION.format(critique="scale {wrong}"), llm.prompts[2])          # solver retry
         self.assertIn("**Previous reviewer critique (if this is a retry):**\nscale {wrong}\n", llm.prompts[3])
-        self.assertIn("after 2 rounds of refinement", llm.prompts[4])                                # curator lesson
+        self.assertIn("after 2 rounds of refinement", llm.prompts[4])                                # consolidator lesson
         rec = agent.run_task(_task(1), 1)
         self.assertEqual((rec["store_decision"], rec["entry_id"]), ("reinforced", "calc-00001"))
         self.assertIn("[calc-00001] helpful=1 harmful=0", agent.playbook.text)
-        llm.curator = "garbage"
-        agent2 = self._agent(llm, RemoConfig(mode="remo", K=1), d, CuratorConsolidator(llm, 3, False))
+        llm.consolidator = "garbage"
+        agent2 = self._agent(llm, RemoConfig(mode="remo", K=1), d, LLMConsolidator(llm, 3, False))
         rec = agent2.run_task(_task(2), 2)
-        self.assertEqual((rec["store_decision"], rec["entry_id"], rec["consolidator"]["outcome"]), ("curator_error", "", "parse_error"))
+        self.assertEqual((rec["store_decision"], rec["entry_id"], rec["consolidator"]["outcome"]), ("consolidator_error", "", "parse_error"))
         self.assertEqual(len(agent2.playbook), 1)
 
     def test_error_rounds(self):
         d = tempfile.mkdtemp()
         llm = FakeLLM(fail_first_solver=True)
-        agent = self._agent(llm, RemoConfig(mode="remo", K=2), d, CuratorConsolidator(llm, 1, False))
+        agent = self._agent(llm, RemoConfig(mode="remo", K=2), d, LLMConsolidator(llm, 1, False))
         rec = agent.run_task(_task(0), 0)
         self.assertEqual((rec["stop_reason"], rec["gate"], rec["store_decision"], rec["final_answer"]), ("solver_error", "never_clean", "skipped", ""))
         self.assertEqual(len(rec["rounds"]), 1); self.assertEqual(rec["rounds"][0]["answer"], ""); self.assertIn("boom", rec["rounds"][0]["solver"]["error"])
@@ -362,7 +362,7 @@ class TestRunner(unittest.TestCase):
                     return json.dumps({"verdict": "errors_found", "critique": "no"}), {}
                 raise TimeoutError("critic down")
             return json.dumps({"final_answer": str(n)}), {}
-        agent = self._agent(flaky, RemoConfig(mode="remo", K=3), d, CuratorConsolidator(flaky, 1, False))
+        agent = self._agent(flaky, RemoConfig(mode="remo", K=3), d, LLMConsolidator(flaky, 1, False))
         rec = agent.run_task(_task(0), 0)
         self.assertEqual((rec["stop_reason"], len(rec["rounds"]), rec["final_answer"]), ("critic_error", 2, "1"))   # last round with a critic
 
