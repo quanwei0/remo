@@ -67,6 +67,13 @@ Every runner talks to an OpenAI-compatible chat endpoint: `--base-url`, `--model
 
 **Local vLLM servers** (the paper's runs used gpt-oss-120b / 20b as the agent model, temperature 0; the embedding server below is part of the FinanceGym retrieval stack, not an agent model)
 
+vLLM is not a dependency of the `remo` package (its torch / pydantic / httpx pins clash with appworld's); install it in its own
+environment and put `vllm` on `PATH` before running the scripts below. The runs here used vLLM 0.23.0 (torch 2.11, Python 3.12):
+
+```bash
+conda create -n vllm python=3.12 -y && conda activate vllm && pip install "vllm==0.23.0"
+```
+
 | script | serves |
 |---|---|
 | `scripts/servers/vllm_120b.sh` | GPT-OSS-120B, TP=4, port 8125. `TOOLS=1` adds the tool-call parser FinanceGym needs; Formula and AppWorld run **without** it (paper setting — the parser changes what gpt-oss returns as `content`) |
