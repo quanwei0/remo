@@ -47,7 +47,11 @@ RETRY_USE = "Use the reflection above to avoid repeating these mistakes and solv
 NOT_SHOWN = "Output:\n```\n[NOT SHOWN FOR BREVITY]```\n\n"
 TRIMMED = "[TRIMMED HISTORY]\n\n"
 
-_ROLE = re.compile("(USER|ASSISTANT|SYSTEM):\n", re.IGNORECASE)
+# Anchored at a line start: the template's role markers always begin a line, but the playbook injected
+# into that template is model-written text, and a lesson ending a line with e.g. "...to the file system:"
+# otherwise matches mid-word and splits a spurious message out of the middle of the prompt (a "system"
+# one makes the server reject the request, a "user"/"assistant" one corrupts the turn structure silently).
+_ROLE = re.compile("^(USER|ASSISTANT|SYSTEM):\n", re.IGNORECASE | re.MULTILINE)
 _FULL_CODE = re.compile(r"```python\n(.*?)```", re.DOTALL)
 _PARTIAL_CODE = re.compile(r".*```python\n(.*)", re.DOTALL)
 
