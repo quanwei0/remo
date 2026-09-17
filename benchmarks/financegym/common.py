@@ -8,6 +8,7 @@ call parameters and parsing are those of the paper's runs.
 """
 import json
 import os
+import re
 import sys
 
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,14 +32,35 @@ PLAYBOOK_PREFIX = "fin"
 INJECT_CAP_CHARS = 30000            # memory text prepended to the harness question
 CRITIC_MEMORY_CAP_CHARS = 20000     # memory text shown to the critic for the novelty check
 CRITIC_MAX_TOKENS = 2048            # the critic call sends max_tokens only: no temperature (server default)
+CRITIC_MAX_TOKENS_COVERAGE = 6144   # the coverage critic lists 8-12 expected items + missing items + a checklist: 2048 truncates its JSON
 EXTRA_ROUNDS_BUDGET = 550           # run-wide cap on retry rounds (never reached in the paper's runs)
 MIN_DOCS = 3                        # below this the episode is NOT saved (redone on the next run)
 REPORT_MIN_CHARS = 1500             # pre-submission quality floor
 REPORT_CAP_CHARS = 12000            # report chars the critic reads
 QUERY_CAP = 20                      # queries the critic reads
 
-with open(os.path.join(_REPO, "prompts", "critic", "financegym.txt"), encoding="utf-8", newline="") as _f:
-    CRITIC_PROMPT = _f.read()       # one prompt for both arms; ReMo simply ignores refine / store
+def _read_prompt(name: str) -> str:
+    with open(os.path.join(_REPO, "prompts", "critic", name), encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+CRITIC_PROMPT = _read_prompt("financegym.txt")                    # the paper's runs: one prompt for both arms; ReMo ignores refine / store
+CRITIC_PROMPT_COVERAGE = _read_prompt("financegym_coverage.txt")  # --critic-variant coverage (see below), NOT the paper's setting
+
+# -- critic variants ---------------------------------------------------------------------------------
+# "paper": the submitted runs — the critic checks evidence discipline (uncited load-bearing numbers, leakage,
+#   contradictions) and the retry re-investigates from scratch. The organizers' scoring of that submission showed
+#   per-item quality unchanged and coverage DOWN (rubric items never addressed 50.1% -> 53.4%): unsourced but
+#   correct facts were dropped or replaced by "not available", and the stored lessons were mostly restrictive.
+# "coverage": the critic audits coverage against a self-drawn list of what a complete answer must contain (plus two
+#   hard floors: self-contradiction and post-cutoff facts), the retry must produce a SUPERSET of the previous report
+#   (it sees that report and the audit), and lessons are coverage checklists per question type, kept short and
+#   filtered for restrictive phrasing. Prompt: prompts/critic/financegym_coverage.txt.
+CRITIC_VARIANTS = ("paper", "coverage")
+INJECT_CAP_CHARS_COVERAGE = 8000    # a big playbook of discipline rules raised the hedging rate on its own; keep checklists short
+LESSON_CAP_CHARS_COVERAGE = 240     # one checklist line per lesson
+PREV_REPORT_CAP_CHARS = 8000        # previous report shown to the retry (coverage variant)
+AUDIT_CAP_CHARS = 3000              # reviewer audit shown to the retry (same cap as the paper's critique)
 
 
 # -- data -----------------------------------------------------------------------------------------
@@ -59,16 +81,48 @@ def read_episodes(run_dir: str) -> list[dict]:
 PLAYBOOK_HEADER = "Analyst playbook — lessons from prior research tasks; apply when relevant:"
 RETRY_HEADER = ("A reviewer found these issues in a previous attempt — run a fresh, better investigation "
                 "that fixes them:")
+# coverage variant strings
+PLAYBOOK_HEADER_COVERAGE = ("Analyst coverage checklists — lessons from prior research tasks; when a checklist matches "
+                            "this question's type, make sure the report covers every item on it:")
+COVERAGE_NOTE = ("Coverage requirements: address every part of the question; state the key figures with their dates; give "
+                 "an explicit, dated forecast (direction and range) for every forward-looking part; when a figure cannot be "
+                 "sourced, state your best estimate and label it as an estimate instead of writing 'not available'; end the "
+                 "report with a 'Key facts and figures' list.")
+RETRY_HEADER_COVERAGE = ("A reviewer audited a previous attempt of this task (audit and previous report below). Write a revised "
+                         "report that is a SUPERSET of the previous one: keep every topic, figure, date and forecast it "
+                         "contains — add sources or attribute them ('according to <source>') rather than deleting them; a "
+                         "figure that cannot be sourced stays, labeled as an unverified estimate — and add the items the "
+                         "reviewer lists as MISSING by running the suggested searches.")
 
 
-def build_question(task: dict, memory_text: str, critique: str | None, plain: bool = False) -> str:
+def compose_retry_context(critique: str, prev_report: str) -> str:
+    """Coverage variant: what the retry round receives as `critique` — the reviewer audit (first 3000 chars) and the
+    previous report (first 8000 chars), so the solver can extend rather than redo."""
+    return (f"=== REVIEWER AUDIT ===\n{(critique or '')[:AUDIT_CAP_CHARS]}\n\n"
+            f"=== PREVIOUS REPORT ===\n{(prev_report or '')[:PREV_REPORT_CAP_CHARS]}")
+
+
+def build_question(task: dict, memory_text: str, critique: str | None, plain: bool = False,
+                   variant: str = "paper") -> str:
     """Playbook (if any) prepended, then the research question + PIT constraint, then (retry rounds:
     `critique` is not None) the previous critique. `plain=True` is the official-harness baseline: the
-    question and the PIT sentence only, no header, no memory, no critique (the leaderboard entry)."""
+    question and the PIT sentence only, no header, no memory, no critique (the leaderboard entry).
+    variant="paper" is byte for byte what the paper's runs sent. variant="coverage": the checklist header,
+    the coverage note after the question, and on retries the superset instruction followed by `critique`,
+    which then is compose_retry_context(audit, previous report) — not cut at 3000 chars."""
     base_q = (f"{task['question']}\n\n(Point-in-time constraint: use only information published on or "
               f"before {task['cutoff']}. The search environment enforces this cutoff.)")
     if plain:
         return base_q
+    if variant == "coverage":
+        q = (f"{PLAYBOOK_HEADER_COVERAGE}\n{memory_text}\n\nResearch question: {base_q}" if memory_text
+             else f"Research question: {base_q}")
+        q += f"\n\n{COVERAGE_NOTE}"
+        if critique is not None:
+            q += f"\n\n{RETRY_HEADER_COVERAGE}\n{critique[:AUDIT_CAP_CHARS + PREV_REPORT_CAP_CHARS + 60]}"
+        return q
+    if variant != "paper":
+        raise ValueError(f"unknown critic variant {variant!r}; choose from {CRITIC_VARIANTS}")
     q = (f"{PLAYBOOK_HEADER}\n{memory_text}\n\nResearch question: {base_q}" if memory_text
          else f"Research question: {base_q}")
     if critique is not None:
@@ -110,15 +164,30 @@ def is_defective(report: str, min_chars: int = REPORT_MIN_CHARS) -> str:
 
 
 # -- critic -----------------------------------------------------------------------------------------
-def build_critic_prompt(task: dict, traj: Trajectory, memory_text: str) -> str:
+def prior_audit_text(prior_critique: str | None) -> str:
+    """Coverage variant: the audit part of what the retry round received (compose_retry_context output, or a bare
+    critique), without the previous report; "(none)" on the first round."""
+    if not prior_critique:
+        return "(none)"
+    text = prior_critique.split("=== PREVIOUS REPORT ===")[0].replace("=== REVIEWER AUDIT ===", "").strip()
+    return text[:AUDIT_CAP_CHARS] or "(none)"
+
+
+def build_critic_prompt(task: dict, traj: Trajectory, memory_text: str, variant: str = "paper",
+                        prior_critique: str | None = None) -> str:
     """The prompt of the paper's runs: question, cutoff, the analyst's queries (first 20, JSON), doc and
     citation counts, the report (first 12000 chars) and the memory text (first 20000 chars) as the prior
-    playbook for the novelty check."""
+    playbook for the novelty check. variant="coverage" formats prompts/critic/financegym_coverage.txt with
+    the same arguments plus the previous round's audit (so the expected list stays fixed across rounds)."""
+    if variant not in CRITIC_VARIANTS:
+        raise ValueError(f"unknown critic variant {variant!r}; choose from {CRITIC_VARIANTS}")
     queries, citations = traj.meta.get("queries") or [], traj.meta.get("citations") or []
-    return CRITIC_PROMPT.format(
-        q=task["question"], cutoff=task["cutoff"], nq=len(queries), queries=json.dumps(queries[:QUERY_CAP]),
-        ndocs=traj.meta.get("docs_retrieved", 0), ncit=len(citations),
-        report=traj.answer[:REPORT_CAP_CHARS], playbook=memory_text[:CRITIC_MEMORY_CAP_CHARS] or "(empty)")
+    args = dict(q=task["question"], cutoff=task["cutoff"], nq=len(queries), queries=json.dumps(queries[:QUERY_CAP]),
+                ndocs=traj.meta.get("docs_retrieved", 0), ncit=len(citations),
+                report=traj.answer[:REPORT_CAP_CHARS], playbook=memory_text[:CRITIC_MEMORY_CAP_CHARS] or "(empty)")
+    if variant == "coverage":
+        return CRITIC_PROMPT_COVERAGE.format(prior_audit=prior_audit_text(prior_critique), **args)
+    return CRITIC_PROMPT.format(**args)
 
 
 def parse_critic_reply(text: str) -> Reflection:
@@ -165,6 +234,44 @@ class VerbatimConsolidator:
         return eid
 
 
+# -- coverage variant: checklist lessons ---------------------------------------------------------------
+_RESTRICTIVE = re.compile(r"\b(do not|don't|never|avoid|refrain|acknowledge|omit|unless|only (when|if)|instead of stating|"
+                          r"should not|must not|cannot be (cited|sourced|verified|confirmed)|not (publicly )?available|"
+                          r"could not be (found|verified|confirmed)|fabricat\w*|unsupported claim\w*)\b", re.I)
+
+
+def is_checklist_lesson(lesson: str) -> bool:
+    """Coverage variant store filter: a lesson is kept when it is a coverage checklist (what to cover), not an
+    evidence-discipline rule (what not to write). Rejects lessons with restrictive phrasing and lessons too short
+    to name anything to cover."""
+    text = " ".join((lesson or "").split())
+    return len(text) >= 20 and not _RESTRICTIVE.search(text)
+
+
+def checklist_lesson(lesson: str, cap: int = LESSON_CAP_CHARS_COVERAGE) -> str:
+    """One line, at most `cap` chars (cut at the last item separator before the cap when possible)."""
+    text = " ".join((lesson or "").split())
+    if len(text) <= cap:
+        return text
+    cut = text[:cap]
+    k = max(cut.rfind(";"), cut.rfind(","))
+    return (cut[:k] if k >= cap // 2 else cut).rstrip(" ;,") + "."
+
+
+class ChecklistConsolidator(VerbatimConsolidator):
+    """Coverage variant: the lesson is stored as one checklist line (checklist_lesson) — the filter
+    (is_checklist_lesson) is applied by the driver before the store decision."""
+
+    def consolidate(self, playbook: Playbook, episode, task, traj) -> str:
+        lesson = checklist_lesson(episode.lesson())
+        if not lesson:
+            return ""
+        eid = f"{playbook.prefix}-{playbook._next:05d}"
+        playbook._next += 1
+        playbook.entries.append(Entry(eid, lesson))
+        return eid
+
+
 class FinanceGymCritic:
     """One chat call per round (independent of earlier rounds), async over one shared openai.AsyncOpenAI
     client (creating a client per call under concurrency crashed the process in ssl.SSLContext.__new__).
@@ -172,16 +279,18 @@ class FinanceGymCritic:
     paper's runs. Only a failure of the call itself is a failed Reflection (the episode stops, not admitted);
     an unparseable reply is accepted without a lesson (see parse_critic_reply)."""
 
-    def __init__(self, client, model: str, max_tokens: int = CRITIC_MAX_TOKENS):
-        self.client, self.model, self.max_tokens = client, model, max_tokens
+    def __init__(self, client, model: str, max_tokens: int = CRITIC_MAX_TOKENS, variant: str = "paper"):
+        if variant not in CRITIC_VARIANTS:
+            raise ValueError(f"unknown critic variant {variant!r}; choose from {CRITIC_VARIANTS}")
+        self.client, self.model, self.max_tokens, self.variant = client, model, max_tokens, variant
         self.calls = self.parse_failures = self.call_failures = 0
 
-    def build_prompt(self, task, traj: Trajectory, memory_text: str) -> str:
-        return build_critic_prompt(task, traj, memory_text)
+    def build_prompt(self, task, traj: Trajectory, memory_text: str, prior_critique: str | None = None) -> str:
+        return build_critic_prompt(task, traj, memory_text, self.variant, prior_critique)
 
     async def reflect(self, task, traj: Trajectory, memory_text: str, prior_critique: str | None,
                       round_idx: int, K: int) -> Reflection:
-        prompt = self.build_prompt(task, traj, memory_text)
+        prompt = self.build_prompt(task, traj, memory_text, prior_critique)   # the paper's prompt ignores prior_critique
         self.calls += 1
         try:
             r = await self.client.chat.completions.create(model=self.model, max_tokens=self.max_tokens,

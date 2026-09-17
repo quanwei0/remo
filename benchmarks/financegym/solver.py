@@ -59,10 +59,10 @@ class FinanceGymSolver:
     def __init__(self, pit_url: str, embed_url: str, embed_model: str = EMBED_MODEL, timeout_s: float = 120.0,
                  task_timeout_s: float = 3660.0, max_empty_retries: int = 3, min_docs: int = MIN_DOCS,
                  model: str | None = None, base_url: str | None = None, reader_base_url: str | None = None,
-                 plain: bool = False, log=print):
+                 plain: bool = False, variant: str = "paper", log=print):
         self.pit_url, self.embed_url, self.embed_model, self.timeout_s = pit_url, embed_url, embed_model, timeout_s
         self.task_timeout_s, self.max_empty_retries, self.min_docs, self.log = task_timeout_s, max_empty_retries, min_docs, log
-        self.plain = plain
+        self.plain, self.variant = plain, variant          # variant: common.CRITIC_VARIANTS (question strings)
         self.profile, self.reader_profile = harness_profiles(model, base_url, reader_base_url)
 
     def backend(self, cutoff: str) -> FinanceGymBackend:
@@ -93,7 +93,7 @@ class FinanceGymSolver:
                 "queries": list(backend.queries)}
 
     async def solve(self, task: dict, memory_text: str, critique: str | None) -> Trajectory:
-        question = build_question(task, memory_text, critique, plain=self.plain)
+        question = build_question(task, memory_text, critique, plain=self.plain, variant=self.variant)
         attempts = []
         for attempt in range(1, self.max_empty_retries + 1):
             rec = await self._attempt(task["cutoff"], question)

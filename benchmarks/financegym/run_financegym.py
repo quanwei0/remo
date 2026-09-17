@@ -44,10 +44,12 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from benchmarks.financegym.common import (BENCH_FILE, CRITIC_MAX_TOKENS, DEFAULT_EMBED_URL, DEFAULT_MODEL,   # noqa: E402
-                                          DEFAULT_PIT_URL, EMBED_MODEL, EXTRA_ROUNDS_BUDGET, INJECT_CAP_CHARS,
-                                          MIN_DOCS, MODES, PLAYBOOK_PREFIX, FinanceGymCritic, VerbatimConsolidator,
-                                          cited_entry, load_tasks, make_config, read_episodes, summarize_run)
+from benchmarks.financegym.common import (BENCH_FILE, CRITIC_MAX_TOKENS, CRITIC_MAX_TOKENS_COVERAGE, CRITIC_VARIANTS,   # noqa: E402
+                                          DEFAULT_EMBED_URL, DEFAULT_MODEL, DEFAULT_PIT_URL, EMBED_MODEL, EXTRA_ROUNDS_BUDGET,
+                                          INJECT_CAP_CHARS, INJECT_CAP_CHARS_COVERAGE, MIN_DOCS, MODES,
+                                          PLAYBOOK_PREFIX, ChecklistConsolidator, FinanceGymCritic,
+                                          VerbatimConsolidator, cited_entry, compose_retry_context,
+                                          is_checklist_lesson, load_tasks, make_config, read_episodes, summarize_run)
 from remo import EpisodeState, Playbook, Reflection, RemoConfig, RemoPolicy   # noqa: E402
 
 
@@ -64,8 +66,10 @@ class RunState:
     """Shared, lock-protected state of one run directory."""
 
     def __init__(self, cfg: RemoConfig, run_dir: str, freeze_after: int | None = None,
-                 extra_rounds_budget: int = EXTRA_ROUNDS_BUDGET):
-        self.cfg, self.run_dir, self.freeze_after = cfg, run_dir, freeze_after
+                 extra_rounds_budget: int = EXTRA_ROUNDS_BUDGET, variant: str = "paper"):
+        if variant not in CRITIC_VARIANTS:
+            raise ValueError(f"unknown critic variant {variant!r}; choose from {CRITIC_VARIANTS}")
+        self.cfg, self.run_dir, self.freeze_after, self.variant = cfg, run_dir, freeze_after, variant
         self.extra_rounds_budget = extra_rounds_budget
         os.makedirs(os.path.join(run_dir, "trajs"), exist_ok=True)
         self.playbook = Playbook.load(os.path.join(run_dir, "playbook.txt"), prefix=PLAYBOOK_PREFIX)
@@ -77,7 +81,7 @@ class RunState:
                 state = json.load(f)
             self.policy.load_state(state)
             self.extra_rounds_used = int(state.get("extra_rounds_used", 0))
-        self.consolidator = VerbatimConsolidator()
+        self.consolidator = ChecklistConsolidator() if variant == "coverage" else VerbatimConsolidator()
         self.lock = asyncio.Lock()
         self.done_ids = {e["task_id"] for e in read_episodes(run_dir)}
         self.saved = self.unsaved = 0
@@ -157,7 +161,8 @@ async def _run_one(task, task_index, rs, solver, critic, sem, min_docs, log):
                 f"report={len(traj.answer)}c refine={refl.refine} store={refl.store} -> {action}")
             if action != "retry":
                 break
-            critique = refl.critique
+            # paper: the critique alone, re-investigated from scratch; coverage: audit + previous report (extend, don't redo)
+            critique = compose_retry_context(refl.critique, traj.answer) if rs.variant == "coverage" else refl.critique
         # submitted report: the last round's, unless it is empty (then the first round's)
         final = trajs[-1] if trajs[-1].answer.strip() else trajs[0]
         final_round = trajs.index(final) + 1
@@ -176,6 +181,8 @@ async def _run_one(task, task_index, rs, solver, critic, sem, min_docs, log):
                 decision = "readonly"                        # learn-then-freeze: no write, no saturation bookkeeping
             elif not st.lesson():
                 decision = "skipped"                         # no lesson: no write, no reinforcement, no bookkeeping
+            elif rs.variant == "coverage" and not is_checklist_lesson(st.lesson()):
+                decision = "skipped_filter"                  # coverage variant: a restrictive rule is not a checklist
             else:
                 decision = rs.policy.memory_decision(st, task_index, cited_present)
             entry_id = ""
@@ -213,7 +220,7 @@ async def run_all(tasks: list[dict], rs: RunState, solver, critic, conc: int, mi
     todo = [(i, t) for i, t in enumerate(tasks) if t["task_id"] not in rs.done_ids]
     rs.arm_barrier([i for i, _ in todo])
     log(f"[run] {len(todo)} to do / {len(tasks)} listed ({len(tasks) - len(todo)} already in episodes.jsonl); "
-        f"mode={rs.cfg.mode} K={rs.cfg.K} memory={rs.cfg.use_memory} critic={critic is not None} "
+        f"mode={rs.cfg.mode} K={rs.cfg.K} memory={rs.cfg.use_memory} critic={critic is not None} variant={rs.variant} "
         f"freeze_after={rs.freeze_after} conc={conc} min_docs={min_docs} playbook={len(rs.playbook)} entries "
         f"extra_rounds={rs.extra_rounds_used}/{rs.extra_rounds_budget}")
     recs = await asyncio.gather(*[run_one(t, i, rs, solver, critic, sem, min_docs, log) for i, t in todo])
@@ -243,6 +250,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="served model name, used for the harness backbone + reader and for the critic")
     p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off"],
                    help="AdaReMo: what to do with a lesson the critic judges already covered")
+    p.add_argument("--critic-variant", default="paper", choices=list(CRITIC_VARIANTS),
+                   help="paper = the submitted runs' critic / retry / lessons (default). coverage = coverage-audit critic, "
+                        "superset retry that sees the previous report, checklist lessons (see common.py); NOT the "
+                        "paper's setting")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="learn-then-freeze: consolidate on the first A tasks, then run with the memory read-only")
     # FinanceGym-specific
@@ -259,11 +270,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend-timeout-s", type=float, default=120.0, help="PIT/embed http timeout")
     p.add_argument("--extra-rounds-budget", type=int, default=EXTRA_ROUNDS_BUDGET,
                    help="run-wide cap on retry rounds (rounds after the first), persisted in policy_state.json")
-    p.add_argument("--critic-max-tokens", type=int, default=CRITIC_MAX_TOKENS,
-                   help="the critic sends no temperature: the server default applies")
+    p.add_argument("--critic-max-tokens", type=int, default=None,
+                   help=f"critic reply budget (default {CRITIC_MAX_TOKENS} as in the paper's runs; {CRITIC_MAX_TOKENS_COVERAGE} with "
+                        "--critic-variant coverage, whose reply lists the expected and missing items); the critic sends no "
+                        "temperature: the server default applies")
     p.add_argument("--llm-timeout-s", type=float, default=600.0)
     # memory / AdaReMo knobs (defaults = RemoConfig defaults; inject cap 30000 chars as in the paper's runs)
-    p.add_argument("--inject-cap", type=int, default=INJECT_CAP_CHARS, help="playbook chars prepended to the question")
+    p.add_argument("--inject-cap", type=int, default=None,
+                   help=f"playbook chars prepended to the question (default {INJECT_CAP_CHARS} as in the paper's runs; "
+                        f"{INJECT_CAP_CHARS_COVERAGE} with --critic-variant coverage)")
     p.add_argument("--freeze-w", type=int, default=20)
     p.add_argument("--freeze-rho", type=float, default=0.1)
     p.add_argument("--probe-p", type=int, default=20)
@@ -295,6 +310,10 @@ def main(argv=None) -> int:
     if args.loglevel.upper() != "DEBUG":
         logging.getLogger("httpx").setLevel(logging.WARNING)     # one INFO line per fetch otherwise
 
+    if args.inject_cap is None:
+        args.inject_cap = INJECT_CAP_CHARS_COVERAGE if args.critic_variant == "coverage" else INJECT_CAP_CHARS
+    if args.critic_max_tokens is None:
+        args.critic_max_tokens = CRITIC_MAX_TOKENS_COVERAGE if args.critic_variant == "coverage" else CRITIC_MAX_TOKENS
     try:
         cfg, baseline = make_config(args.mode, args.K, redundant_mode=args.redundant_mode, freeze_w=args.freeze_w,
                                     freeze_rho=args.freeze_rho, probe_p=args.probe_p, inject_cap_chars=args.inject_cap)
@@ -310,8 +329,8 @@ def main(argv=None) -> int:
     os.makedirs(args.out, exist_ok=True)
     cfg_path = os.path.join(args.out, "run_config.json")
     prev = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}  # noqa: SIM115 (tiny, read once)
-    for k in ("mode", "K", "freeze_after"):
-        if prev and prev.get(k) != getattr(args, k):
+    for k in ("mode", "K", "freeze_after", "critic_variant"):
+        if prev and prev.get(k, "paper" if k == "critic_variant" else None) != getattr(args, k):
             raise SystemExit(f"run dir {args.out} was started with {k}={prev.get(k)}; refusing {k}={getattr(args, k)}")
     with open(cfg_path, "w") as f:
         json.dump({**vars(args), "base_url": base_url, "reader_base_url": reader_base_url,
@@ -328,10 +347,11 @@ def main(argv=None) -> int:
                               timeout_s=args.backend_timeout_s, task_timeout_s=args.task_timeout_s,
                               max_empty_retries=args.max_empty_retries, min_docs=args.min_docs,
                               model=args.model, base_url=base_url, reader_base_url=reader_base_url,
-                              plain=baseline, log=_log)
-    critic = None if baseline else FinanceGymCritic(client, args.model, max_tokens=args.critic_max_tokens)
+                              plain=baseline, variant=args.critic_variant, log=_log)
+    critic = None if baseline else FinanceGymCritic(client, args.model, max_tokens=args.critic_max_tokens,
+                                                    variant=args.critic_variant)
     rs = RunState(cfg, args.out, freeze_after=args.freeze_after,
-                  extra_rounds_budget=args.extra_rounds_budget)
+                  extra_rounds_budget=args.extra_rounds_budget, variant=args.critic_variant)
 
     async def _main():
         if not args.skip_health:

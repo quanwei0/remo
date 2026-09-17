@@ -11,9 +11,12 @@ import unittest
 from types import SimpleNamespace
 
 from benchmarks.financegym import check_answers, make_answers
-from benchmarks.financegym.common import (CRITIC_PROMPT, FinanceGymCritic, VerbatimConsolidator, build_critic_prompt,
-                                          build_question, cited_entry, is_defective, make_config, make_trajectory,
-                                          parse_critic_reply, summarize_run, trajectory_from_record)
+from benchmarks.financegym.common import (COVERAGE_NOTE, CRITIC_PROMPT, CRITIC_PROMPT_COVERAGE, PLAYBOOK_HEADER_COVERAGE,
+                                          RETRY_HEADER_COVERAGE, ChecklistConsolidator, FinanceGymCritic,
+                                          VerbatimConsolidator, build_critic_prompt, build_question, checklist_lesson,
+                                          cited_entry, compose_retry_context, is_checklist_lesson, is_defective,
+                                          make_config, make_trajectory, parse_critic_reply, summarize_run,
+                                          trajectory_from_record)
 from benchmarks.financegym.run_financegym import RunState, run_all, write_final_results
 from remo import EpisodeState, Playbook, Reflection, RemoConfig, RoundRecord
 
@@ -398,3 +401,102 @@ class TestDriver(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCoverageVariant(unittest.TestCase):
+    """--critic-variant coverage: the paper path is untouched; the variant changes the question strings, the retry
+    context (audit + previous report), the critic prompt file and the lesson filter/cap."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.task = {"task_id": "t000", "question": "Q0?", "cutoff": "2025-06-01"}
+
+    def test_paper_path_unchanged_by_default(self):
+        self.assertEqual(build_question(self.task, "", None), build_question(self.task, "", None, variant="paper"))
+        self.assertEqual(build_question(self.task, "[fin-00001] helpful=1 L", "fix X"),
+                         "Analyst playbook — lessons from prior research tasks; apply when relevant:\n[fin-00001] helpful=1 L\n\n"
+                         "Research question: Q0?" + PIT + "\n\nA reviewer found these issues in a previous attempt — run a fresh, "
+                         "better investigation that fixes them:\nfix X")
+        self.assertNotIn("Coverage requirements", build_question(self.task, "", None))
+        with self.assertRaises(ValueError):
+            build_question(self.task, "", None, variant="nope")
+
+    def test_coverage_question_strings(self):
+        q = build_question(self.task, "", None, variant="coverage")
+        self.assertTrue(q.startswith("Research question: Q0?" + PIT)); self.assertTrue(q.endswith("\n\n" + COVERAGE_NOTE))
+        q = build_question(self.task, "[fin-00001] helpful=1 For questions about X: cover a; b.", None, variant="coverage")
+        self.assertTrue(q.startswith(PLAYBOOK_HEADER_COVERAGE + "\n[fin-00001] helpful=1 For questions about X: cover a; b.\n\n"))
+        ctx = compose_retry_context("MISSING: 1) margin impact — search: ...", "PREV " * 3000)
+        self.assertTrue(ctx.startswith("=== REVIEWER AUDIT ===\nMISSING")); self.assertIn("=== PREVIOUS REPORT ===\nPREV", ctx)
+        self.assertLessEqual(len(ctx), 3000 + 8000 + 60)
+        q = build_question(self.task, "", ctx, variant="coverage")
+        self.assertIn("\n\n" + RETRY_HEADER_COVERAGE + "\n=== REVIEWER AUDIT ===", q)
+        self.assertIn("=== PREVIOUS REPORT ===", q)                       # not cut at 3000 chars
+        self.assertEqual(build_question(self.task, "M", ctx, plain=True, variant="coverage"), "Q0?" + PIT)
+
+    def test_coverage_critic_prompt_and_client_call(self):
+        tr = _traj(report="REPORT", queries=("q1", "q2"), citations=("c",))
+        p = build_critic_prompt(self.task, tr, "PB", variant="coverage")
+        self.assertEqual(p, CRITIC_PROMPT_COVERAGE.format(q="Q0?", cutoff="2025-06-01", nq=2, queries=json.dumps(["q1", "q2"]),
+                                                          ndocs=10, ncit=1, report="REPORT", playbook="PB", prior_audit="(none)"))
+        self.assertIn("NEVER ask the analyst to remove", p); self.assertNotEqual(p, build_critic_prompt(self.task, tr, "PB"))
+        # round 2+: the previous audit (without the previous report) is shown so the expected list stays fixed
+        ctx = compose_retry_context("MISSING: 1) x — search: y", "PREV REPORT TEXT")
+        p2 = build_critic_prompt(self.task, tr, "PB", variant="coverage", prior_critique=ctx)
+        self.assertIn("Previous audit of this task (empty on the first audit): MISSING: 1) x — search: y", p2)
+        self.assertNotIn("PREV REPORT TEXT", p2)
+        self.assertEqual(build_critic_prompt(self.task, tr, "PB", prior_critique=ctx), build_critic_prompt(self.task, tr, "PB"))
+        client = FakeChatClient(json.dumps({"verdict": "errors_found", "confidence": 0.9, "critique": "MISSING: 1) x — search: y",
+                                            "refine": True, "store": True, "lesson": "For questions about X: cover a; b; c.",
+                                            "question_type": "X", "expected": ["a"], "missing": ["x"]}))
+        critic = FinanceGymCritic(client, "M", variant="coverage")
+        refl = asyncio.run(critic.reflect(self.task, tr, "PB", None, 1, 3))
+        self.assertEqual(client.kwargs[0]["messages"][0]["content"], p)          # same call shape as the paper's critic
+        asyncio.run(critic.reflect(self.task, tr, "PB", ctx, 2, 3))
+        self.assertEqual(client.kwargs[1]["messages"][0]["content"], p2)
+        self.assertEqual((refl.verdict, refl.refine, refl.store, refl.lesson),
+                         ("incorrect", True, True, "For questions about X: cover a; b; c."))   # extra fields ignored
+        with self.assertRaises(ValueError):
+            FinanceGymCritic(client, "M", variant="nope")
+
+    def test_checklist_lesson_filter_and_cap(self):
+        self.assertTrue(is_checklist_lesson("For questions about tariff exposure: cover affected volumes; margin impact; mitigation."))
+        for bad in ("When evidence cannot be found, acknowledge the gap rather than fabricating.",
+                    "Do not state figures that cannot be cited.", "Every claim must be backed by a source; avoid unsupported claims.",
+                    "Never present unverified numbers.", "short"):
+            self.assertFalse(is_checklist_lesson(bad), bad)
+        long = "For questions about X: " + "; ".join(f"item {i}" for i in range(60))
+        capped = checklist_lesson(long)
+        self.assertLessEqual(len(capped), 240); self.assertTrue(capped.startswith("For questions about X: item 0;"))
+        self.assertTrue(capped.endswith(".")); self.assertNotIn("\n", checklist_lesson("a\n b" * 10))
+
+    def test_driver_coverage_retry_context_filter_and_consolidator(self):
+        tasks = _tasks(3)
+        def fn(t, tr, m, r):
+            if t["task_id"] == "t000":               # missing items -> retry; the accepted round carries a checklist lesson
+                return (Reflection("incorrect", critique="MISSING: 1) margin impact — search: q", refine=True,
+                                   lesson="For questions about X: cover a; b.", store=True) if r == 1
+                        else Reflection("correct", lesson="For questions about X: cover a; b; c.", store=True))
+            if t["task_id"] == "t001":               # a restrictive lesson is filtered out
+                return Reflection("correct", lesson="Do not state figures that cannot be cited.", store=True)
+            return Reflection("correct", lesson="For questions about Y: " + "; ".join(f"i{i}" for i in range(80)), store=True)
+        solver = FakeSolver()
+        rs = RunState(RemoConfig(mode="remo", K=3), self.d, variant="coverage")
+        self.assertIsInstance(rs.consolidator, ChecklistConsolidator)
+        s = _run(tasks, rs, solver, FakeCritic(fn), conc=1)
+        self.assertEqual(s["store_decisions"], {"stored": 2, "skipped_filter": 1})
+        retry = [c for c in solver.calls if c[0] == "t000" and c[2] is not None]
+        self.assertEqual(len(retry), 1)
+        self.assertTrue(retry[0][2].startswith("=== REVIEWER AUDIT ===\nMISSING: 1) margin impact"))
+        self.assertIn("=== PREVIOUS REPORT ===\n" + "R" * 100, retry[0][2])          # the round-1 report travels with the audit
+        texts = [e.text for e in rs.playbook.entries]
+        self.assertEqual(texts[0], "For questions about X: cover a; b; c.")
+        self.assertLessEqual(len(texts[1]), 240); self.assertTrue(texts[1].startswith("For questions about Y: i0;"))
+        eps = {e["task_id"]: e for e in map(json.loads, open(os.path.join(self.d, "episodes.jsonl")))}
+        self.assertEqual(eps["t001"]["store_decision"], "skipped_filter"); self.assertEqual(eps["t001"]["entry_id"], "")
+        # the paper variant is the default and stores the restrictive lesson verbatim
+        rs2 = RunState(RemoConfig(mode="remo", K=3), tempfile.mkdtemp())
+        self.assertIsInstance(rs2.consolidator, VerbatimConsolidator); self.assertEqual(rs2.variant, "paper")
+        with self.assertRaises(ValueError):
+            RunState(RemoConfig(mode="remo", K=3), tempfile.mkdtemp(), variant="nope")
+

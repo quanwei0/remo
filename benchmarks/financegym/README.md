@@ -23,6 +23,7 @@ common.py          benchmark file, question builder, critic prompt loading + Fin
 solver.py          runtime patches + FinanceGymSolver (imports the harness; env remo-financegym only)
 run_financegym.py  CLI: concurrent driver for every arm, resumable run dir, answers.jsonl + final_results.json at the end
 calibrate.py       zero-rollout critic calibration over finished reports (flag / refine / store / parse rates)
+coverage_judge.py  proxy scorer (LLM-drafted 10-item rubric per question, coverage per system, hedges, numbers kept)
 check_answers.py   pre-submission quality floor: list / delete defective episodes so a rerun redoes them
 make_answers.py    submission file answers.jsonl in benchmark order, question verbatim from the benchmark file
 corpus_pipeline/   rebuild of the point-in-time corpus (WARC list + scripts; see its README)
@@ -55,6 +56,42 @@ corpus_pipeline/   rebuild of the point-in-time corpus (WARC list + scripts; see
 * Rounds: an empty report is never retried (the critic still runs on it); retry rounds draw on one run-wide
   budget (`--extra-rounds-budget`, 550; persisted in `policy_state.json`); the submitted report is the last round's
   unless it is empty, then the first round's.
+
+## Coverage variant (`--critic-variant coverage`) — not the paper's setting
+
+The organizers' scoring of the ReMo submission (29.3 vs the baseline's 31.9, hindsight 43.9 vs 47.0, foresight n.s.)
+came with a diagnostic: per-item quality unchanged, rubric items **never addressed** up from 50.1% to 53.4%. Our
+trajectories show why: the paper's critic flags uncited load-bearing numbers, the retry re-investigates from scratch
+and keeps only ~55% of the first draft's numbers, unsourced facts become "not available", and the stored lessons are
+mostly restrictive ("if it cannot be cited, acknowledge the gap") — precision bought with coverage, which is what the
+rubric pays for. `--critic-variant coverage` turns the three pieces toward coverage while keeping the harness, arms,
+K, gates and memory mechanics unchanged:
+
+* **Critic** (`prompts/critic/financegym_coverage.txt`): drafts the 8–12 items a complete answer must cover (sub-questions,
+  dated key figures, actors and responses, drivers, risks, and an explicit dated forecast for every forward-looking part),
+  marks what the report misses, and keeps two hard floors (self-contradiction, post-cutoff facts). Uncited but plausible
+  figures need attribution, not deletion; the critique may never ask to remove content. `errors_found` ⇔ an explicit
+  sub-question is unanswered, ≥ 3 expected items are missing, or a hard floor is hit (≥ 80% coverage is complete), so both
+  arms retry on real gaps; from round 2 the critic sees the previous audit and must re-use its expected list (otherwise it
+  redraws a longer list every round and no task ever converges — seen on the first pilot attempt). An item the analyst already searched for
+  (a query targets it) and reported as unavailable counts as addressed: the corpus does not contain everything, and asking again
+  only produces more "could not be confirmed" sentences (seen on the second pilot attempt: never-clean tasks went 0.25 → 0.75
+  hedges per report across their retries).
+* **Retry** (`common.RETRY_HEADER_COVERAGE`, `common.compose_retry_context`): the retry round receives the reviewer audit
+  **and the previous report** and must return a superset — keep every topic / figure / forecast (source, attribute, or
+  label as an estimate), add the missing items with the suggested searches. Every round also carries a coverage note
+  (address every part, dated key figures, explicit forecasts, a closing "Key facts and figures" list).
+* **Memory**: lessons are coverage checklists per question type ("For questions about tariff exposure: cover …"), one
+  line ≤ 240 chars (`common.ChecklistConsolidator`); restrictive lessons are refused (`common.is_checklist_lesson`,
+  store decision `skipped_filter`); the injection cap defaults to 8 000 chars instead of 30 000. The critic reply budget defaults to 6 144 tokens
+  (`--critic-max-tokens`; the paper's 2 048 truncates a reply that lists the expected and missing items).
+
+Validation before any resubmission (no rubric locally): `coverage_judge.py` drafts a 10-item rubric per question from the
+question alone, marks which items each system's report addresses, and reports coverage (overall / hindsight /
+foresight), hedge sentences, distinct numbers and the share of round-1 numbers kept. Run it on the same tasks for the
+baseline, the paper variant and the coverage variant; the variant should raise coverage and bring hedges back to the
+baseline's level before 400 tasks are run. Run dirs record `critic_variant`; a dir started with one variant refuses the
+other.
 
 ## Setup
 
