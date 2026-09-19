@@ -12,7 +12,7 @@ the same API responses in the observations and the same unit tests in the scores
 | paper | here |
 |---|---|
 | `Solve(task, M, ρ)` | `solver.AppWorldSolver`: a ReAct loop in a **fresh** `AppWorld(task_id, random_seed=123)` per round. Instruction messages = the arm's template rendered with jinja2 (task, supervisor, app descriptions, the whole playbook), split into USER / ASSISTANT turns, no system message: `prompts/solver/appworld.txt` (the paper's generator prompt, shows the playbook) for `memory` / `remo` / `adaremo`, `prompts/solver/appworld_react.txt` (AppWorld's official ReAct prompt, no playbook) for `react` / `refine`. Per step the first ```python block is executed (the reply is cut after it; a reply without a block executes `""`), the output comes back as `Output:` (20 000 chars, then `[REST NOT SHOWN FOR BREVITY]`), the context is trimmed at 400 000 chars (observations blanked first); `react` keeps AppWorld's plain scaffold limits instead (outputs uncapped, context trimmed at 50 000 chars). `--max-steps 40`, temperature 0, `max_tokens` 8192; execution timeout = AppWorld's 100 s + an outer 300 s guard. A retry injects ρ (the previous round's whole reflection) as three messages after the instructions. `completed` = task submitted **and** the last non-empty output has no `Execution failed` / `Traceback`. |
-| `Reflect` | `critic.AppWorldCritic`: one call with `prompts/critic/appworld_remo.txt` (ReMo) or `appworld_adaremo.txt` (AdaReMo) + the whole playbook (`(empty)` without memory) + the previous reflection (`N/A` in round 1) + the `=== FULL CONVERSATION HISTORY ===` block of the attempt. `trajectory_verdict` decides the verdict (unparseable → the env signal), `key_insight` is the lesson, `refine` / `store` / `novelty_reason` drive AdaReMo; a `store` with `confidence` < `--store-conf 0.7` is not honoured (nothing written or reinforced, no memory demand in the saturation window; `store_decision: skipped_lowconf`). No ground truth, no test results. `react` makes no critic call (`critic.EnvCritic`: the verdict is the env signal). |
+| `Reflect` | `critic.AppWorldCritic`: one call with `prompts/critic/appworld_remo.txt` (ReMo), `appworld_adaremo.txt` (AdaReMo) or `appworld_adaremo_structural.txt` (AdaReMo, `--redundant-mode structural`) + the whole playbook (`(empty)` without memory) + the previous reflection (`N/A` in round 1) + the `=== FULL CONVERSATION HISTORY ===` block of the attempt. `trajectory_verdict` decides the verdict (unparseable → the env signal), `key_insight` is the lesson, `refine` / `store` / `novelty_reason` drive AdaReMo; a `store` with `confidence` < `--store-conf 0.7` is not honoured (nothing written or reinforced, no memory demand in the saturation window; `store_decision: skipped_lowconf`). No ground truth, no test results. `react` makes no critic call (`critic.EnvCritic`: the verdict is the env signal). |
 | memory `M` | `remo.SectionedPlaybook(style="plain")` — `## SECTION` headers, `[shr-00012] text` bullets — seeded from `initial_playbook.txt` (`--initial-playbook PATH`, `--no-initial-playbook` = empty skeleton), injected whole; reinforcement = the `[confirmed xN]` tag |
 | `Consolidate` | `consolidator.LLMConsolidator` (default): `prompts/consolidator/appworld.txt` + the admitted reflection (round 1's, or the flipping round's behind `[VALIDATED BY RETRY: …]`) + playbook + task + history → ADD operations appended as bullets; a failed call / unusable reply leaves the playbook unchanged (`store_decision: consolidator_error`). `--consolidator append` = the `key_insight` as one OTHERS bullet, no call. |
 | Alg. 1 / 2 | `remo.ReMoAgent` (subclass `run_appworld.AppWorldAgent`: record fields, `consolidator_error`, the read-only phase of `--freeze-after`) |
@@ -54,7 +54,9 @@ python $R --mode adaremo --K 2 --limit 1 --out runs/appworld/smoke --base-url $U
 ```
 
 - Flags: `--split` (default `test_normal`), `--limit N` (first N tasks in file order), `--K` (default 3;
-  `react` / `memory` fix K=1), `--max-steps 40`, `--freeze-after A`, `--redundant-mode {reinforce,gate,off}`,
+  `react` / `memory` fix K=1), `--max-steps 40`, `--freeze-after A`, `--redundant-mode {reinforce,gate,off,structural}`
+  (structural: `--redundancy-judge {llm,lexical}`, `--redundancy-k 3`, `--redundancy-min-sim 0.15`, `--redundancy-threshold 0.6`;
+  see "Structural redundancy" below),
   `--freeze-w 20 --freeze-rho 0.1 --probe-p 20`, `--store-conf 0.7`, `--consolidator {llm,append}`, `--initial-playbook PATH` /
   `--no-initial-playbook`, `--max-tokens 8192` / `--critic-max-tokens 8192` / `--consolidator-max-tokens 8192`,
   `--temperature 0`, `--random-seed 123`, `--exec-timeout 100` / `--guard-timeout 300`, `--llm-timeout-s 600`,
@@ -68,6 +70,28 @@ python $R --mode adaremo --K 2 --limit 1 --out runs/appworld/smoke --base-url $U
 - Resumable: the same `--out` skips every `task_index` already in `episodes.jsonl` and restores `playbook.txt` /
   `policy_state.json` (a run dir refuses another `--mode`, `--K`, `--split`, `--consolidator`, seed playbook).
 - Tasks run sequentially (AppWorld worlds are process-global); replicates are separate `--out` dirs.
+
+## Structural redundancy (`--redundant-mode structural`, not a paper setting)
+
+With the paper's AdaReMo the critic answers `store` and `novelty_reason` itself. Qwen3.5-27B and Qwen3.6-27B answer
+`store=false` on ~99% of admitted episodes (a specific lesson is "not generalizable", a general one is "already covered by
+[shr-00005]"), so their AdaReMo memory stays at the seed (challenge TGC 61 vs 75 for ReMo, which never asks). `structural`
+moves the decision out of the critic:
+
+1. critic prompt `prompts/critic/appworld_adaremo_structural.txt` = the AdaReMo prompt minus the store duties, plus the rule
+   that `key_insight` names the app and the API / field / condition (or is `"none"`);
+2. `remo.redundancy.LexicalRetriever` ranks the non-seed bullets by a weighted Jaccard over identifier-like tokens (API paths,
+   snake_case names, numbers weigh 3, words 1) and keeps up to `--redundancy-k` with similarity >= `--redundancy-min-sim`;
+   seed bullets (`--initial-playbook`) are principles and are never candidates;
+3. no candidate -> the lesson is novel, no model call; otherwise `LLMRedundancyChecker` asks the model one question over the
+   candidates ("does one of these state the SAME rule?"; an id outside the list, an unparseable or failed reply = not covered)
+   — or `--redundancy-judge lexical` covers above `--redundancy-threshold` without a call;
+4. covered -> `SectionedPlaybook.reinforce(id)`: the bullet gets `[confirmed xN]` (a first version also kept the lesson beneath the
+   bullet as an example line; the examples were near-verbatim copies of the bullet and were dropped); not covered -> the
+   consolidator runs as in the other modes.
+
+Records: `redundancy` = `{covered_by, reason, candidates}` per episode; `final_results.json` adds `redundancy_decisions`
+(`covered` / `novel` / `no_lesson`); the finish line logs the checker's call and failure counts.
 
 ## Outputs
 

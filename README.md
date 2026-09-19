@@ -110,8 +110,15 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 
 - FinanceGym has no `react`: its ReAct arm is `baseline`, the official harness on its own (the leaderboard entry);
   every other arm wraps that same harness.
+- FinanceGym also takes `--critic-variant coverage` (coverage-audit critic, superset retry that sees the previous report, checklist lessons) — a post-submission variant, not the paper's setting; see `benchmarks/financegym/README.md`.
 - `--redundant-mode` (AdaReMo only): `reinforce` (default, `helpful+1` on the cited entry), `gate` (drop the covered
-  lesson) or `off` (store it anyway) — the redundancy ablation.
+  lesson) or `off` (store it anyway) — the redundancy ablation. `structural` (AppWorld; added after the paper's runs) takes
+  the store decision away from the critic: the critic writes one specific `key_insight` (prompt
+  `appworld_adaremo_structural.txt`, no `store` / `novelty_reason`), `remo.redundancy` retrieves the lexically closest
+  non-seed bullets and a one-question judge call decides whether one states the same rule — covered: that bullet is
+  reinforced (`[confirmed xN]`); not covered: the episode is consolidated. Seed bullets are principles and never cover a specific lesson. Motivation: with Qwen3.5 / 3.6-27B the
+  AdaReMo critic stored 0–5 lessons per 417-task run (everything judged "already covered" or "not generalizable"), so its
+  memory never left the seed; see the AppWorld README.
 - `memory` is `remo` with `--K 1`. The K=1 arms still call the critic: with no retry its verdict only feeds the
   outcome gate, so `react` records a verdict and writes nothing, `memory` writes the lesson of every admitted
   episode, and `remo --K 3` adds the retry loop on top of `memory` — the two arms isolate memory and refinement.

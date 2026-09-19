@@ -9,7 +9,10 @@ class RemoConfig:
                     "adaremo": critic-governed refine/store decisions + saturation freeze (Alg. 2)
     K               round budget (max attempts per task)
     redundant_mode  what AdaReMo does with a lesson the critic judges already covered:
-                    "reinforce" (default): helpful+1 on the cited entry; "gate": discard; "off": store anyway
+                    "reinforce" (default): helpful+1 on the cited entry; "gate": discard; "off": store anyway;
+                    "structural": the critic does NOT decide — a RedundancyChecker compares the episode's
+                    lesson with the memory (lexical retrieval of similar entries, then a judge); a covering
+                    entry is reinforced, otherwise the episode is consolidated. Seed / principle entries never cover a specific lesson.
     freeze_w / freeze_rho / probe_p
                     saturation freeze: over the last freeze_w admitted episodes, if fewer than
                     freeze_rho*freeze_w touched memory (stored or reinforced) consolidation is frozen;
@@ -31,9 +34,13 @@ class RemoConfig:
 
     def __post_init__(self):
         assert self.mode in ("remo", "adaremo"), self.mode
-        assert self.redundant_mode in ("reinforce", "gate", "off"), self.redundant_mode
+        assert self.redundant_mode in ("reinforce", "gate", "off", "structural"), self.redundant_mode
         assert self.K >= 1
 
     @property
     def adaptive(self) -> bool:
         return self.mode == "adaremo"
+
+    @property
+    def structural(self) -> bool:
+        return self.adaptive and self.redundant_mode == "structural"

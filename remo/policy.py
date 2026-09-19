@@ -80,7 +80,8 @@ class RemoPolicy:
     # -- memory decision -------------------------------------------------------------------------
     def memory_decision(self, st: EpisodeState, task_index: int, cited_present: list[str]) -> str:
         """Returns one of: skipped (not admitted), stored, reinforced, discarded, skipped_frozen.
-        `cited_present` are the entry ids the critic cited that exist in the playbook. The caller
+        `cited_present` are the entry ids the critic cited that exist in the playbook (redundant_mode
+        "structural": the covering entry found by the RedundancyChecker, or none). The caller
         performs the actual write for "stored" (consolidator, which may add nothing) and
         "reinforced" (playbook.reinforce on every cited id); this method only decides and does the
         saturation bookkeeping."""
@@ -90,7 +91,10 @@ class RemoPolicy:
             return "stored"
         refl = st.last
         probe = (task_index + 1) % self.cfg.probe_p == 0
-        want = refl.store or self.cfg.redundant_mode == "off"
+        if self.cfg.redundant_mode == "structural":      # the checker decided: a covering entry -> reinforce, none -> store
+            want = not cited_present
+        else:
+            want = refl.store or self.cfg.redundant_mode == "off"
         decision = "discarded"
         if want:
             if self.frozen and not probe:
@@ -100,7 +104,7 @@ class RemoPolicy:
                     self.frozen = False
                     self.freeze_events.append({"task_index": task_index, "event": "unfreeze(probe)"})
                 decision = "stored"
-        elif self.cfg.redundant_mode == "reinforce" and cited_present:
+        elif self.cfg.redundant_mode in ("reinforce", "structural") and cited_present:
             decision = "reinforced"
         # saturation window records memory DEMAND (the critic wanted to store, or reinforced), not
         # whether the write happened: counting only actual writes would make a freeze self-sustaining

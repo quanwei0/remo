@@ -5,9 +5,10 @@ from dataclasses import asdict
 from typing import Any
 
 from .config import RemoConfig
-from .interfaces import Consolidator, Critic, Reflection, Solver, Trajectory
+from .interfaces import Consolidator, Critic, RedundancyChecker, RedundancyResult, Reflection, Solver, Trajectory
 from .memory import Playbook, SectionedPlaybook
 from .policy import EpisodeState, RemoPolicy
+from .redundancy import LexicalRedundancyChecker
 
 
 class AppendConsolidator:
@@ -20,12 +21,18 @@ class AppendConsolidator:
 class ReMoAgent:
     def __init__(self, cfg: RemoConfig, solver: Solver, critic: Critic,
                  playbook: Playbook | SectionedPlaybook | None = None, consolidator: Consolidator | None = None,
-                 run_dir: str | None = None):
+                 run_dir: str | None = None, redundancy: RedundancyChecker | None = None):
+        """`redundancy` (redundant_mode "structural" only): the RedundancyChecker; default a
+        LexicalRedundancyChecker whose principle ids are the entries the playbook holds at construction
+        (the seed)."""
         self.cfg = cfg
         self.solver, self.critic = solver, critic
         self.playbook = playbook if playbook is not None else Playbook()   # an EMPTY Playbook is falsy (__len__), keep its prefix
         self.consolidator = consolidator if consolidator is not None else AppendConsolidator()
         self.policy = RemoPolicy(cfg)
+        self.redundancy = redundancy
+        if cfg.structural and self.redundancy is None:
+            self.redundancy = LexicalRedundancyChecker(principle_ids=set(self.playbook.ids()))
         self.run_dir = run_dir
         if run_dir:
             os.makedirs(run_dir, exist_ok=True)
@@ -51,7 +58,13 @@ class ReMoAgent:
             critique = refl.critique
         gate = self.policy.gate(st)
         known = self.playbook.ids()
-        cited = [i for i in self.playbook.find_cited_ids(st.last.cited_id, st.last.novelty_reason) if i in known]
+        redundancy = None
+        if self.cfg.use_memory and self.cfg.structural and st.admitted:      # the checker, not the critic, decides
+            res = self.redundancy.check(st.lesson(), self.playbook, st, task, traj)
+            cited = [res.covered_by] if res.covered_by in known else []
+            redundancy = asdict(res)
+        else:
+            cited = [i for i in self.playbook.find_cited_ids(st.last.cited_id, st.last.novelty_reason) if i in known]
         decision = self.policy.memory_decision(st, task_index, cited) if self.cfg.use_memory else "no_memory"
         entry_id = ""
         if decision == "stored":
@@ -66,6 +79,8 @@ class ReMoAgent:
                "store_decision": decision, "entry_id": entry_id, "frozen": self.policy.frozen,
                "memory_chars_at_start": len(memory_text), "final_answer": traj.answer,
                "final_completed": traj.completed}
+        if redundancy is not None:
+            rec["redundancy"] = redundancy
         if self.run_dir:
             self._save(rec)
         return rec

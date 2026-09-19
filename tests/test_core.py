@@ -227,3 +227,95 @@ class TestSectionedPlaybookInTheLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# -- redundant_mode "structural" ------------------------------------------------------------------------
+from remo import LexicalRedundancyChecker, LexicalRetriever, LLMRedundancyChecker, RedundancyResult   # noqa: E402
+from remo.redundancy import specific_tokens, weighted_jaccard                                            # noqa: E402
+
+
+class _JudgeLLM:
+    def __init__(self, replies):
+        self.replies, self.requests = list(replies), []
+    def chat(self, messages, max_tokens, temperature):
+        self.requests.append(messages[0]["content"])
+        return self.replies[min(len(self.requests), len(self.replies)) - 1]
+
+
+def _plain_pb(*bullets):
+    pb = SectionedPlaybook.from_skeleton("plain")
+    pb.apply_add_ops([{"type": "ADD", "section": "strategies_and_hard_rules", "content": b} for b in bullets])
+    return pb
+
+
+class TestStructuralRedundancy(unittest.TestCase):
+    def test_tokens_and_similarity(self):
+        t = specific_tokens("Call `apis.amazon.show_payment_cards` and keep cards with expiry_year > 2023; the rating field")
+        self.assertEqual(t["apis.amazon.show_payment_cards"], 3.0); self.assertEqual(t["expiry_year"], 3.0)
+        self.assertEqual(t["2023"], 3.0); self.assertEqual(t["rating"], 1.0); self.assertNotIn("the", t)
+        a = specific_tokens("apis.amazon.show_payment_cards returns expiry_year and expiry_month")
+        self.assertEqual(weighted_jaccard(a, a), 1.0)
+        self.assertGreater(weighted_jaccard(a, specific_tokens("filter payment cards by expiry_year from show_payment_cards")),
+                           weighted_jaccard(a, specific_tokens("always look at the API docs before calling an API")))
+        self.assertEqual(weighted_jaccard(a, {}), 0.0)
+
+    def test_retriever_excludes_principles_and_ranks(self):
+        entries = [("shr-00005", "Always look at API specifications before calling an API."),
+                   ("vc-00010", "apis.amazon.show_payment_cards: pick a card whose expiry_year is later than the current year"),
+                   ("cms-00011", "apis.gmail.search_emails needs page_index pagination")]
+        r = LexicalRetriever(k=3, min_sim=0.15)
+        top = r.top("use show_payment_cards and compare expiry_year with the current year", entries, exclude={"shr-00005"})
+        self.assertEqual(top[0][0], "vc-00010"); self.assertNotIn("shr-00005", [x[0] for x in top])
+        self.assertEqual(r.top("completely unrelated words here", entries), [])
+
+    def test_policy_structural_decisions(self):
+        cfg = RemoConfig(mode="adaremo", K=1, redundant_mode="structural")
+        a = ReMoAgent(cfg, FakeSolver(), ScriptedCritic(OK(lesson="L", store=False)))   # the critic's store=False is ignored
+        rec = a.run_task("t", 0)
+        self.assertEqual(rec["store_decision"], "stored"); self.assertEqual(rec["redundancy"]["reason"], "no similar entry")
+        self.assertEqual(len(a.playbook), 1)
+
+    def test_llm_checker_makes_no_call_without_candidates(self):
+        pb = _plain_pb("apis.venmo.show_transactions is paginated over page_index")
+        llm = _JudgeLLM(['{"covered_by": null, "reason": "x"}'])
+        c = LLMRedundancyChecker(llm, principle_ids=set())
+        res = c.check("unrelated: the gmail draft subject must be non-empty", pb)
+        self.assertEqual((res.covered_by, res.reason, llm.requests), ("", "no similar entry", []))
+        self.assertEqual(c.check("none", pb).reason, "no lesson"); self.assertEqual(c.stats()["no_lesson"], 1)
+
+    def test_llm_checker_covered_and_invalid_id(self):
+        pb = _plain_pb("apis.venmo.show_transactions is paginated: loop over page_index until an empty page",
+                       "apis.gmail.search_emails returns thread ids, not emails")
+        ids = pb.ids()
+        llm = _JudgeLLM([f'{{"covered_by": "{ids[0]}", "reason": "same page_index rule"}}'])
+        c = LLMRedundancyChecker(llm, principle_ids=set())
+        res = c.check("loop apis.venmo.show_transactions over page_index until an empty page is returned", pb)
+        self.assertEqual((res.covered_by, res.reason), (ids[0], "same page_index rule")); self.assertIn(ids[0], res.candidates)
+        self.assertIn(f"[{ids[0]}]", llm.requests[0]); self.assertNotIn(f"[{ids[1]}]", llm.requests[0])   # only retrieved candidates are shown
+        llm2 = _JudgeLLM(['{"covered_by": "shr-99999", "reason": "made up"}'])
+        c2 = LLMRedundancyChecker(llm2, principle_ids=set(), log=lambda m: None)
+        self.assertEqual(c2.check("loop apis.venmo.show_transactions over page_index", pb).covered_by, "")   # not a candidate -> novel
+        c3 = LLMRedundancyChecker(_JudgeLLM(["garbage"]), principle_ids=set(), log=lambda m: None)
+        self.assertEqual(c3.check("loop apis.venmo.show_transactions over page_index", pb).covered_by, "")
+        class Down:
+            def chat(self, *a): raise ConnectionError("down")
+        c4 = LLMRedundancyChecker(Down(), principle_ids=set(), log=lambda m: None)
+        r4 = c4.check("loop apis.venmo.show_transactions over page_index", pb)
+        self.assertEqual(r4.covered_by, ""); self.assertTrue(r4.reason.startswith("judge failed")); self.assertEqual(c4.failures, 1)
+
+    def test_agent_structural_reinforces_and_seed_never_covers(self):
+        seed = _plain_pb("Always look at API specifications before calling an API.")
+        seed_id = seed.ids()[0]
+        cfg = RemoConfig(mode="adaremo", K=1, redundant_mode="structural")
+        critic = ScriptedCritic(OK(lesson="Always look at API specifications before calling an API.", store=False))
+        a = ReMoAgent(cfg, FakeSolver(), critic, playbook=seed,
+                      consolidator=type("C", (), {"consolidate": lambda self, pb, ep, task, traj: ",".join(pb.apply_add_ops(
+                          [{"type": "ADD", "section": "verification_checklist", "content": ep.lesson()}]))})())
+        rec = a.run_task("t", 0)                       # identical to the seed principle, yet the seed can never cover it
+        self.assertEqual(rec["store_decision"], "stored"); self.assertEqual(rec["redundancy"]["candidates"], [])
+        new_id = rec["entry_id"]; self.assertTrue(new_id.startswith("vc-"))
+        rec2 = a.run_task("t2", 1)                     # the stored copy is not a principle: the lexical checker covers it
+        self.assertEqual((rec2["store_decision"], rec2["entry_id"]), ("reinforced", new_id))
+        self.assertIn(f"[{new_id}] Always look at API specifications before calling an API. [confirmed x2]", a.playbook.text)
+        self.assertEqual(len(a.playbook), 2); self.assertEqual(a.playbook.ids(), [seed_id, new_id])
+        self.assertEqual(rec2["redundancy"]["covered_by"], new_id)

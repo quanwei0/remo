@@ -564,3 +564,66 @@ class TestExperimentName(unittest.TestCase):
         self.assertEqual(ra.experiment_name_for("runs/appworld/x_memory_r1", None, log=notes.append), "x_mem_r1")
         self.assertEqual(ra.experiment_name_for("runs/appworld/x", "memory_arm", log=notes.append), "mem_arm")
         self.assertEqual(len(notes), 2)
+
+
+class TestStructuralMode(unittest.TestCase):
+    def test_structural_prompt_file(self):
+        p = read_prompt(CRITIC_PROMPT_PATHS["structural"])
+        for k in ("{{generated_code}}", "{{generated_rationale}}", "{{playbook}}", "{{previous_reflection}}", '"confidence"', '"refine"'):
+            self.assertIn(k, p)
+        self.assertNotIn('"store"', p); self.assertNotIn("novelty_reason", p)
+        self.assertIn("two decisions", p); self.assertIn('write "none"', p)
+        c = AppWorldCritic(FakeLLM(['{"trajectory_verdict": "no_errors", "confidence": 0.9, "refine": false, "key_insight": "apis.x.y returns ids"}']),
+                           adaptive=True, prompt_path=CRITIC_PROMPT_PATHS["structural"])
+        r = c.reflect({}, Trajectory(text="H", completed=True), "pb", None, 1, 3)
+        self.assertTrue(r.correct); self.assertFalse(r.store); self.assertEqual(r.lesson, "apis.x.y returns ids")
+        self.assertIn("two decisions", c.llm.requests[0][0]["content"])
+
+    def test_config_cli_and_readonly_playbook(self):
+        cfg = ra.make_config("adaremo", 3, "structural")
+        self.assertEqual((cfg.redundant_mode, cfg.structural), ("structural", True))
+        self.assertFalse(ra.make_config("remo", 3, "structural").structural)               # structural is an AdaReMo option
+        a = ra.build_parser().parse_args(["--mode", "adaremo", "--out", "x", "--redundant-mode", "structural",
+                                          "--redundancy-judge", "lexical"])
+        self.assertEqual((a.redundancy_judge, a.redundancy_k), ("lexical", 3))
+        ro = ra.ReadOnlyPlaybook(SectionedPlaybook.from_skeleton("plain"))
+        self.assertFalse(ro.reinforce("shr-00001"))
+
+    def test_summarize_counts_redundancy(self):
+        eps = [{"gate": "round1_clean", "stop_reason": "accepted", "store_decision": "reinforced", "rounds": [{"completed": True}],
+                "final_completed": True, "redundancy": {"covered_by": "vc-00010", "reason": "same", "candidates": ["vc-00010"]}},
+               {"gate": "round1_clean", "stop_reason": "accepted", "store_decision": "stored", "rounds": [{"completed": True}],
+                "final_completed": True, "redundancy": {"covered_by": "", "reason": "no similar entry", "candidates": []}},
+               {"gate": "round1_clean", "stop_reason": "accepted", "store_decision": "stored", "rounds": [{"completed": True}],
+                "final_completed": True, "redundancy": {"covered_by": "", "reason": "no lesson", "candidates": []}}]
+        out = ra.summarize(eps, SectionedPlaybook.from_skeleton("plain"), None, None)
+        self.assertEqual(out["redundancy_decisions"], {"covered": 1, "novel": 1, "no_lesson": 1})
+        self.assertNotIn("redundancy_decisions", ra.summarize([{**eps[0], "redundancy": None}], SectionedPlaybook.from_skeleton("plain"), None, None))
+
+
+class TestFrozenClockGuard(unittest.TestCase):
+    def test_clock_is_frozen_detects_a_stopped_clock(self):
+        self.assertFalse(ra.clock_is_frozen())
+        with mock.patch.object(ra.time, "time", lambda: 1684411200.0):
+            self.assertTrue(ra.clock_is_frozen())
+
+    def test_evaluate_in_subprocess_builds_an_eval_only_command(self):
+        a = ra.build_parser().parse_args(["--mode", "adaremo", "--K", "3", "--out", "/tmp/run", "--split", "test_challenge",
+                                          "--root", "/tmp/aw", "--redundant-mode", "structural", "--limit", "5"])
+        with mock.patch.object(ra.subprocess, "call", return_value=0) as call:
+            self.assertEqual(ra.evaluate_in_subprocess(a, log=lambda m: None), 0)
+        argv = call.call_args[0][0]
+        for flag in ("--eval-only", "--skip-health", "--redundant-mode", "structural", "--out", "/tmp/run", "--limit", "5"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[1], os.path.abspath(ra.__file__))
+
+    def test_main_evaluates_in_a_subprocess_when_the_clock_is_frozen(self):
+        with mock.patch.object(ra, "clock_is_frozen", return_value=True), \
+             mock.patch.object(ra, "evaluate_in_subprocess", return_value=0) as sub, \
+             mock.patch.object(ra, "evaluate_experiment") as direct:
+            args = mock.Mock(no_eval=False, eval_only=False)
+            # the guard sits between --no-eval and the in-process evaluation
+            self.assertFalse(args.no_eval)
+            self.assertTrue(ra.clock_is_frozen())
+            ra.evaluate_in_subprocess(args)
+        sub.assert_called_once(); direct.assert_not_called()

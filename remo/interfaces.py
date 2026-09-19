@@ -49,6 +49,23 @@ class Critic(Protocol):
                 round_idx: int, K: int) -> Reflection: ...
 
 
+@dataclass
+class RedundancyResult:
+    """Outcome of a structural redundancy check. `covered_by` is the id of the entry that already states
+    the lesson ("" = novel); `candidates` the ids the retriever proposed to the judge; `reason` the
+    judge's explanation or why no judgement was needed ("no lesson", "no similar entry", ...)."""
+    covered_by: str = ""
+    reason: str = ""
+    candidates: list[str] = field(default_factory=list)
+
+
+class RedundancyChecker(Protocol):
+    """Decides, for an admitted episode, whether its lesson is already in the memory (redundant_mode
+    "structural"). Must not write to the playbook."""
+    def check(self, lesson: str, playbook: "Playbook | SectionedPlaybook", episode: "EpisodeState", task: Any,
+              traj: Trajectory) -> RedundancyResult: ...
+
+
 class Consolidator(Protocol):
     """Writes what an admitted episode taught into the playbook (append-only). `episode` carries every
     round, so the adapter builds the consolidator input exactly as its original run did; `traj` is

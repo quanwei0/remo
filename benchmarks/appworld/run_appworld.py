@@ -2,6 +2,9 @@
 `test_normal` = 168 tasks / 56 scenarios).
 
 Arms:  --mode react (K=1, no memory) | refine (K>1, no memory) | memory (K=1, = remo --K 1) | remo | adaremo.
+adaremo --redundant-mode structural: the critic (prompts/critic/appworld_adaremo_structural.txt) writes a specific
+key_insight and no store decision; remo.redundancy retrieves the lexically closest non-seed bullets and a judge call
+decides coverage — covered: the bullet is reinforced ([confirmed xN]); else the episode is consolidated as usual. Records carry a "redundancy" field, final_results a "redundancy_decisions" count.
 The K=1 arms still call the critic; without a retry its verdict only drives the outcome gate (react writes nothing,
 memory writes the lesson of every admitted episode).
 The loop is remo.ReMoAgent (Algorithms 1/2) over AppWorldSolver (a fresh world per round, the previous
@@ -27,10 +30,14 @@ with load_ground_truth=False): after the last task the runner runs appworld.eval
 every task it ran and writes TGC / SGC (percent) of the final state and of the round-1 snapshot, the gate
 distribution, store decisions, mean rounds (len(rounds), failed rounds included) and the memory size
 (bullets / chars / cl100k_base tokens) into final_results.json. --eval-only redoes just that step.
+If AppWorld's freeze_time outlived the solve loop (the process clock stops at the world's 2023 date) the
+in-process evaluation would drop every FAILING task and report only the passing ones, so the runner detects
+the frozen clock and re-runs the evaluation in a fresh subprocess.
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -39,10 +46,11 @@ if _REPO not in sys.path:                        # works from a checkout without
     sys.path.insert(0, _REPO)
 
 from benchmarks.appworld.consolidator import InsightConsolidator, LLMConsolidator          # noqa: E402
-from benchmarks.appworld.critic import AppWorldCritic, EnvCritic                           # noqa: E402
+from benchmarks.appworld.critic import CRITIC_PROMPT_PATHS, AppWorldCritic, EnvCritic      # noqa: E402
 from benchmarks.appworld.solver import (REACT_MAX_OUTPUT_LENGTH, REACT_PROMPT_PATH,        # noqa: E402
                                         SOLVER_PROMPT_PATH, AppWorldSolver, ChatLLM)
 from remo import ReMoAgent, RemoConfig, SectionedPlaybook                                  # noqa: E402
+from remo.redundancy import LexicalRedundancyChecker, LexicalRetriever, LLMRedundancyChecker      # noqa: E402
 
 INITIAL_PLAYBOOK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "initial_playbook.txt")
 APPWORLD_VERSION = "0.1.4.dev0"    # the appworld revision pinned in pyproject.toml (the paper's runs)
@@ -141,8 +149,10 @@ class AppWorldAgent(ReMoAgent):
     of --freeze-after (task_index >= A: the playbook is injected but nothing is added or reinforced, no
     consolidator call, and the saturation window stays as it was after A-1)."""
 
-    def __init__(self, cfg, solver, critic, playbook, consolidator, cli_mode: str, run_dir=None, freeze_after=None):
-        super().__init__(cfg, solver, critic, playbook=playbook, consolidator=consolidator, run_dir=run_dir)
+    def __init__(self, cfg, solver, critic, playbook, consolidator, cli_mode: str, run_dir=None, freeze_after=None,
+                 redundancy=None):
+        super().__init__(cfg, solver, critic, playbook=playbook, consolidator=consolidator, run_dir=run_dir,
+                         redundancy=redundancy)
         self.cli_mode, self.freeze_after = cli_mode, freeze_after
         self.base_consolidator = self.consolidator
         self.memory_readonly, self._policy_snap = False, self.policy.state()
@@ -247,6 +257,36 @@ def experiment_name_for(out: str, explicit: str | None, log=_log) -> str:
     return name
 
 
+def clock_is_frozen() -> bool:
+    """True when the process clock does not advance — AppWorld freezes it to the world's date (2023) inside
+    `with AppWorld(...)`, and a patcher that outlives the solve loop breaks the evaluation silently: the
+    evaluator's failure formatter then raises IndexError for every task with a FAILING test, those tasks are
+    dropped from the metric and only the passing ones are counted (seen once: TGC 100.0 over 311 of 417 tasks,
+    the same run scored 74.6 when evaluated in a fresh process)."""
+    t0 = time.time()
+    time.sleep(0.05)
+    return time.time() == t0
+
+
+def evaluate_in_subprocess(args, log=_log) -> int:
+    """Re-runs this script with --eval-only in a fresh interpreter (used when the clock is frozen)."""
+    argv = [sys.executable, os.path.abspath(__file__), "--mode", args.mode, "--K", str(args.K), "--out", args.out,
+            "--split", args.split, "--model", args.model, "--root", args.root, "--redundant-mode", args.redundant_mode,
+            "--consolidator", args.consolidator, "--eval-only", "--skip-health"]
+    if args.experiment_name:
+        argv += ["--experiment-name", args.experiment_name]
+    if args.no_initial_playbook:
+        argv += ["--no-initial-playbook"]
+    else:
+        argv += ["--initial-playbook", args.initial_playbook]
+    if args.no_round1_snapshot:
+        argv += ["--no-round1-snapshot"]
+    if args.limit:
+        argv += ["--limit", str(args.limit)]
+    log("[eval] " + " ".join(argv))
+    return subprocess.call(argv)
+
+
 def evaluate_experiment(experiment_name: str, task_ids: list[str], log=_log) -> dict:
     """TGC / SGC (percent, AppWorld's Metric) over `task_ids` with AppWorld's unit tests, reading the end
     state from experiments/outputs/<experiment_name>/tasks/<id>/dbs. Per task: evaluate_task (also saves
@@ -291,7 +331,14 @@ def summarize(eps: list[dict], playbook: SectionedPlaybook, final_eval: dict | N
     n = len(eps)
     rounds = [len(e["rounds"]) for e in eps]
     steps = [sum((r.get("solver") or {}).get("steps") or 0 for r in e["rounds"]) for e in eps]
+    redundancy = {}
+    for e in eps:
+        r = e.get("redundancy")
+        if r is not None:
+            k = "covered" if r.get("covered_by") else ("no_lesson" if r.get("reason") == "no lesson" else "novel")
+            redundancy[k] = redundancy.get(k, 0) + 1
     out = {"n_tasks": n, "gate_distribution": gates, "stop_reasons": stops, "store_decisions": decisions,
+           **({"redundancy_decisions": redundancy} if redundancy else {}),
            "mean_rounds": round(sum(rounds) / n, 3) if n else None, "total_rounds": sum(rounds),
            "mean_solver_steps_per_task": round(sum(steps) / n, 2) if n else None,
            "final_completed_rate": round(sum(bool(e["final_completed"]) for e in eps) / n, 4) if n else None,
@@ -327,7 +374,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-url", default=os.environ.get("REMO_BASE_URL", "http://localhost:8125/v1"),
                    help="OpenAI-compatible base url (solver, critic, consolidator)")
     p.add_argument("--model", default=os.environ.get("REMO_MODEL", DEFAULT_MODEL))
-    p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off"])
+    p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off", "structural"],
+                   help="adaremo: what happens to a lesson the memory already holds. reinforce/gate/off = the critic decides "
+                        "(store + novelty_reason); structural = the critic only writes a specific key_insight and a "
+                        "RedundancyChecker (lexical retrieval + judge) decides: covered -> reinforce the entry, else consolidate "
+                        "(critic prompt appworld_adaremo_structural.txt)")
+    p.add_argument("--redundancy-judge", default="llm", choices=["llm", "lexical"],
+                   help="structural: judge the retrieved candidates with the model (default) or by lexical similarity alone")
+    p.add_argument("--redundancy-k", type=int, default=3, help="structural: candidates retrieved per lesson")
+    p.add_argument("--redundancy-min-sim", type=float, default=0.15, help="structural: minimum lexical similarity of a candidate")
+    p.add_argument("--redundancy-threshold", type=float, default=0.6, help="structural + lexical judge: similarity that counts as covered")
     p.add_argument("--store-conf", type=float, default=0.7, help="adaremo: a store the critic asserts with lower confidence is skipped")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="learn-then-freeze: consolidate on the first A tasks, then run with the memory read-only")
@@ -412,25 +468,39 @@ def main(argv=None) -> int:
                                 round1_experiment=round1_experiment, log=_log, **solver_settings(args.mode))
         critic = (EnvCritic() if args.mode == "react" else
                   AppWorldCritic(llm, adaptive=cfg.adaptive, max_tokens=args.critic_max_tokens,
-                                 temperature=args.temperature, store_conf=args.store_conf, log=_log))
+                                 temperature=args.temperature, store_conf=args.store_conf, log=_log,
+                                 prompt_path=CRITIC_PROMPT_PATHS["structural"] if cfg.structural else None))
         consolidator = (LLMConsolidator(llm, max_tokens=args.consolidator_max_tokens, temperature=args.temperature, log=_log)
                         if args.consolidator == "llm" else InsightConsolidator())
-        agent = AppWorldAgent(cfg, solver, critic, load_playbook(initial_playbook), consolidator, cli_mode=args.mode,
-                              run_dir=args.out, freeze_after=args.freeze_after)
+        seed = load_playbook(initial_playbook)
+        redundancy = None
+        if cfg.structural:                            # the seed bullets are principles: they never cover a specific lesson
+            retriever = LexicalRetriever(k=args.redundancy_k, min_sim=args.redundancy_min_sim)
+            redundancy = (LLMRedundancyChecker(llm, retriever=retriever, principle_ids=set(seed.ids()), log=_log)
+                          if args.redundancy_judge == "llm" else
+                          LexicalRedundancyChecker(retriever=retriever, principle_ids=set(seed.ids()), threshold=args.redundancy_threshold))
+        agent = AppWorldAgent(cfg, solver, critic, seed, consolidator, cli_mode=args.mode,
+                              run_dir=args.out, freeze_after=args.freeze_after, redundancy=redundancy)
         done = agent.done_indices()
         todo = [(i, t) for i, t in enumerate(task_ids) if i not in done]
         _log(f"[run] {len(todo)} to do / {len(task_ids)} listed ({len(done)} already in episodes.jsonl); "
              f"mode={args.mode} core={cfg.mode} K={cfg.K} memory={'on' if cfg.use_memory else 'off'} "
+             f"redundant={cfg.redundant_mode}{'/' + args.redundancy_judge if cfg.structural else ''} "
              f"experiment={experiment} playbook={len(agent.playbook)} bullets")
         for i, tid in todo:
             run_task(agent, tid, i, args.out)
         _log(f"[run] finished: llm calls={llm.calls} failures={llm.failures} prompt_tokens={llm.prompt_tokens} "
              f"completion_tokens={llm.completion_tokens}; critic parse_failures={critic.parse_failures} "
-             f"call_failures={critic.call_failures}; consolidator failures={getattr(consolidator, 'failures', 0)}")
+             f"call_failures={critic.call_failures}; consolidator failures={getattr(consolidator, 'failures', 0)}"
+             + (f"; redundancy {json.dumps(redundancy.stats())}" if redundancy is not None else ""))
 
     if args.no_eval:
         _log("[eval] skipped (--no-eval); final_results.json is left as it is — run again with --eval-only to score")
         return 0
+    if not args.eval_only and clock_is_frozen():         # freeze_time leaked from the solve loop: see clock_is_frozen
+        _log("[eval] WARNING: the process clock is frozen (AppWorld freeze_time outlived the solve loop); an in-process "
+             "evaluation would silently drop every failing task — evaluating in a fresh subprocess instead")
+        return evaluate_in_subprocess(args)
     eps = read_episodes(args.out)
     eps_by_id = {e.get("task_id"): e for e in eps}
     ran = [t for t in task_ids if t in eps_by_id]

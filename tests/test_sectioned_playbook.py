@@ -123,3 +123,14 @@ class TestCitedIds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEntriesText(unittest.TestCase):
+    def test_entries_text_strips_the_confirmed_tag(self):
+        pb = SectionedPlaybook.from_skeleton("plain")
+        pb.apply_add_ops([ADD("STRATEGIES AND HARD RULES", "x"), ADD("STRATEGIES AND HARD RULES", "y")])
+        pb.reinforce("shr-00001"); pb.reinforce("shr-00001")
+        self.assertIn("[shr-00001] x [confirmed x3]", pb.text)
+        self.assertEqual(pb.entries_text(), [("shr-00001", "x"), ("shr-00002", "y")])
+        c = SectionedPlaybook.from_skeleton("counts"); c.apply_add_ops([ADD("OTHERS", "z")]); c.reinforce("misc-00001")
+        self.assertEqual(c.entries_text(), [("misc-00001", "z")])

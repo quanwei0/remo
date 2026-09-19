@@ -25,7 +25,10 @@ from benchmarks.appworld.solver import EMPTY_PLAYBOOK, read_prompt
 
 ROOT = Path(__file__).resolve().parents[2]
 CRITIC_PROMPT_PATHS = {False: ROOT / "prompts" / "critic" / "appworld_remo.txt",
-                       True: ROOT / "prompts" / "critic" / "appworld_adaremo.txt"}
+                       True: ROOT / "prompts" / "critic" / "appworld_adaremo.txt",
+                       # redundant_mode "structural": the AdaReMo prompt without the store / novelty duties and with a
+                       # specificity requirement on key_insight (the redundancy check reads that field)
+                       "structural": ROOT / "prompts" / "critic" / "appworld_adaremo_structural.txt"}
 SEE_HISTORY = "See full conversation history below"
 NO_PRIOR = "N/A"
 
@@ -72,10 +75,12 @@ class AppWorldCritic:
     confidence a `store` needs (AdaReMo; the ReMo prompt has neither field)."""
 
     def __init__(self, llm, adaptive: bool, max_tokens: int = 8192, temperature: float = 0.0,
-                 store_conf: float = 0.7, log=print):
+                 store_conf: float = 0.7, log=print, prompt_path: Path | None = None):
+        """`prompt_path` overrides the arm's prompt (structural mode passes CRITIC_PROMPT_PATHS["structural"])."""
         self.llm, self.adaptive, self.max_tokens, self.temperature, self.log = llm, adaptive, max_tokens, temperature, log
         self.store_conf = store_conf
-        self.prompt = read_prompt(CRITIC_PROMPT_PATHS[adaptive])
+        self.prompt_path = prompt_path or CRITIC_PROMPT_PATHS[adaptive]
+        self.prompt = read_prompt(self.prompt_path)
         self.calls = self.parse_failures = self.call_failures = 0
         # one entry per call: confidence, parsed, elapsed_s and, for a store below store_conf, low_confidence =
         # the store / novelty_reason / cited_id fields as the critic gave them (cleared in the Reflection)

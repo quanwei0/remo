@@ -58,6 +58,10 @@ class Playbook:
         e.helpful += 1
         return True
 
+    def entries_text(self) -> list[tuple[str, str]]:
+        """(id, text) of every entry — what a RedundancyChecker compares a lesson with."""
+        return [(e.id, e.text) for e in self.entries]
+
     def get(self, eid: str) -> Entry | None:
         return next((e for e in self.entries if e.id == eid), None)
 
@@ -361,6 +365,11 @@ class SectionedPlaybook:
                 return f"{m.group(1)} [confirmed x{n}]"
             self._text, k = re.subn(rf"(\[{bid}\][^\n]*?)(?: \[confirmed x(\d+)\])?$", bump, self._text, count=1, flags=re.M)
         return bool(k)
+
+    def entries_text(self) -> list[tuple[str, str]]:
+        """(id, content) of every bullet, the plain style's " [confirmed xN]" tag removed — what a
+        RedundancyChecker compares a lesson with."""
+        return [(p["id"], re.sub(r" \[confirmed x\d+\]$", "", p["content"]).strip()) for p in self._bullets()]
 
     def save(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
