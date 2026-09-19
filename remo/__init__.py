@@ -1,4 +1,4 @@
-"""ReMo / AdaReMo core: benchmark-agnostic refinement + memory control (paper Algorithms 1 and 2)."""
+"""ReMo / AutoGovern core: benchmark-agnostic refinement + memory control (paper Algorithms 1 and 2)."""
 from .config import RemoConfig
 from .interfaces import Trajectory, Reflection, Solver, Critic, Consolidator, RedundancyChecker, RedundancyResult
 from .policy import RemoPolicy, EpisodeState, RoundRecord

@@ -23,7 +23,7 @@ from remo.memory import Entry, Playbook, find_cited_ids     # noqa: E402
 FH_ROOT = os.path.abspath(os.path.expanduser(os.environ.get("FINHARNESS_ROOT",
                                                             os.path.join(_REPO, "third_party", "finance_harness"))))
 BENCH_FILE = os.environ.get("FH_TASKS", os.path.join(FH_ROOT, "FinanceGym", "data", "benchmark_400_public.jsonl"))
-MODES = ("baseline", "refine", "memory", "remo", "adaremo")   # CLI arms; see make_config
+MODES = ("baseline", "refine", "memory", "remo", "autogovern")   # CLI arms; see make_config
 EMBED_MODEL = "Qwen/Qwen3-Embedding-4B"
 DEFAULT_PIT_URL = "http://127.0.0.1:8889"
 DEFAULT_EMBED_URL = "http://127.0.0.1:8888/v1/embeddings"
@@ -306,10 +306,10 @@ class FinanceGymCritic:
 
 
 # -- arms -> RemoConfig -------------------------------------------------------------------------------
-def make_config(mode: str, K: int | None, **adaremo_knobs):
+def make_config(mode: str, K: int | None, **autogovern_knobs):
     """CLI arm -> (RemoConfig, baseline). baseline = the official harness alone (one attempt, no critic,
     no memory) — this IS the ReAct arm on FinanceGym; every other arm wraps the same harness: refine = K>1 no
-    memory; memory = K=1 with memory; remo / adaremo = Algorithms 1 / 2. K defaults to 1 for the single-attempt
+    memory; memory = K=1 with memory; remo / autogovern = Algorithms 1 / 2. K defaults to 1 for the single-attempt
     arms and 3 otherwise."""
     from remo import RemoConfig
     if mode not in MODES:
@@ -320,8 +320,8 @@ def make_config(mode: str, K: int | None, **adaremo_knobs):
         raise ValueError(f"--mode {mode} is a single-attempt arm (K=1); got --K {K}")
     if mode == "refine" and K < 2:
         raise ValueError("--mode refine needs --K >= 2 (K=1 without memory is --mode baseline)")
-    use_memory = mode in ("memory", "remo", "adaremo")
-    cfg = RemoConfig(mode="adaremo" if mode == "adaremo" else "remo", K=K, use_memory=use_memory, **adaremo_knobs)
+    use_memory = mode in ("memory", "remo", "autogovern")
+    cfg = RemoConfig(mode="autogovern" if mode == "autogovern" else "remo", K=K, use_memory=use_memory, **autogovern_knobs)
     return cfg, mode == "baseline"
 
 

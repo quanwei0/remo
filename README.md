@@ -1,11 +1,11 @@
-# ReMo / AdaReMo
+# ReMo / AutoGovern
 
 Reference implementation of **From More to Enough: Rethinking Refinement and Memory in Self-Improving LLM Agents**, with
 runners for AppWorld, Formula and FinanceGym.
 
 - **ReMo** (Algorithm 1): a solver–critic refinement loop inside each task (round budget `K`) plus an append-only memory across
   tasks. Memory is written only for episodes the outcome gate admits (`round1_clean`, `cross_round_validated`).
-- **AdaReMo** (Algorithm 2): the critic also decides `refine` (retry only with an actionable fix, else `critic_stop`) and
+- **AutoGovern** (Algorithm 2): the critic also decides `refine` (retry only with an actionable fix, else `critic_stop`) and
   `store` (evidence-backed, generalizable, novel — a covered lesson must cite the entry it duplicates); a saturation freeze
   stops consolidation once the last `freeze_w` admitted episodes stop demanding writes. Redundant lessons are *reinforced*
   (`helpful+1` on the cited entry, no model call) or, with `--redundant-mode gate`, discarded.
@@ -29,7 +29,7 @@ tests/                         unit tests: Algorithm 1/2 semantics, the three ad
 - `remo/` has no benchmark code and never sees ground truth; each `benchmarks/<name>/` plugs in a solver, a critic, a
   consolidator, a data loader and a post-hoc scorer, and reads its prompts from `prompts/` at import time: solver prompts
   for Formula and AppWorld (`appworld_react.txt` = AppWorld's official ReAct prompt, used by the no-memory arms), critic
-  prompts per benchmark and arm (`*_remo.txt` / `*_adaremo.txt`; FinanceGym has one for both), consolidator prompts for Formula
+  prompts per benchmark and arm (`*_remo.txt` / `*_autogovern.txt`; FinanceGym has one for both), consolidator prompts for Formula
   and AppWorld. FinanceGym's solver prompt is the harness's own, and it has no consolidator prompt (lessons are appended verbatim).
 - Paper ↔ code: `Solve` = `Solver.solve(task, M, ρ)` · `Reflect` = `Critic.reflect` → `Reflection(v, ρ, g_ref, g_sto)` ·
   `completed(τ)` = `Trajectory.completed` · gate / `admitted` = `RemoPolicy` · `Consolidate` = append-only `Consolidator` ·
@@ -86,8 +86,8 @@ conda create -n vllm python=3.12 -y && conda activate vllm && pip install "vllm=
 
 ```bash
 export REMO_API_KEY=sk-...
-python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
-       --base-url https://api.openai.com/v1 --model gpt-4o --out runs/formula/gpt4o_adaremo_k3
+python benchmarks/formula/run_formula.py --mode autogovern --K 3 --data data/formula_test.jsonl \
+       --base-url https://api.openai.com/v1 --model gpt-4o --out runs/formula/gpt4o_autogovern_k3
 ```
 
 - Works for OpenAI and any compatible endpoint (Anthropic `https://api.anthropic.com/v1/`, DeepSeek, Together, OpenRouter …);
@@ -106,18 +106,18 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 | refinement only | `refine` | 2 … 5 |
 | memory only | `memory` | 1 |
 | ReMo | `remo` | 1 … 5 (default 3) |
-| AdaReMo | `adaremo` | 1 … 5 |
+| AutoGovern | `autogovern` | 1 … 5 |
 
 - FinanceGym has no `react`: its ReAct arm is `baseline`, the official harness on its own (the leaderboard entry);
   every other arm wraps that same harness.
 - FinanceGym also takes `--critic-variant coverage` (coverage-audit critic, superset retry that sees the previous report, checklist lessons) — a post-submission variant, not the paper's setting; see `benchmarks/financegym/README.md`.
-- `--redundant-mode` (AdaReMo only): `reinforce` (default, `helpful+1` on the cited entry), `gate` (drop the covered
+- `--redundant-mode` (AutoGovern only): `reinforce` (default, `helpful+1` on the cited entry), `gate` (drop the covered
   lesson) or `off` (store it anyway) — the redundancy ablation. `structural` (AppWorld; added after the paper's runs) takes
   the store decision away from the critic: the critic writes one specific `key_insight` (prompt
-  `appworld_adaremo_structural.txt`, no `store` / `novelty_reason`), `remo.redundancy` retrieves the lexically closest
+  `appworld_autogovern_structural.txt`, no `store` / `novelty_reason`), `remo.redundancy` retrieves the lexically closest
   non-seed bullets and a one-question judge call decides whether one states the same rule — covered: that bullet is
   reinforced (`[confirmed xN]`); not covered: the episode is consolidated. Seed bullets are principles and never cover a specific lesson. Motivation: with Qwen3.5 / 3.6-27B the
-  AdaReMo critic stored 0–5 lessons per 417-task run (everything judged "already covered" or "not generalizable"), so its
+  AutoGovern critic stored 0–5 lessons per 417-task run (everything judged "already covered" or "not generalizable"), so its
   memory never left the seed; see the AppWorld README.
 - `memory` is `remo` with `--K 1`. The K=1 arms still call the critic: with no retry its verdict only feeds the
   outcome gate, so `react` records a verdict and writes nothing, `memory` writes the lesson of every admitted
@@ -153,8 +153,8 @@ python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formul
 ```bash
 python benchmarks/formula/prepare_data.py --out data/formula_test.jsonl
 for r in 1 2 3 4 5; do
-  python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
-         --base-url $URL --model GPT-OSS-120B --out runs/formula/adaremo_k3_r$r &
+  python benchmarks/formula/run_formula.py --mode autogovern --K 3 --data data/formula_test.jsonl \
+         --base-url $URL --model GPT-OSS-120B --out runs/formula/autogovern_k3_r$r &
 done; wait
 ```
 
@@ -169,19 +169,19 @@ done; wait
 
 ```bash
 export APPWORLD_ROOT=$PWD/data/appworld && mkdir -p $APPWORLD_ROOT && (cd $APPWORLD_ROOT && appworld download data)
-python benchmarks/appworld/run_appworld.py --mode adaremo --K 3 --split test_normal \
-       --base-url $URL --model GPT-OSS-120B --out runs/appworld/adaremo_k3_r1
+python benchmarks/appworld/run_appworld.py --mode autogovern --K 3 --split test_normal \
+       --base-url $URL --model GPT-OSS-120B --out runs/appworld/autogovern_k3_r1
 ```
 
 - ReAct loop in the AppWorld REPL: one code block per step, at most `--max-steps` (40).
 - A round is `completed` when the task is submitted and the last execution output shows no error; a retry opens a fresh
   world with the critique injected.
-- Prompts: `memory` / `remo` / `adaremo` render the paper's generator prompt (`prompts/solver/appworld.txt`, shows the
+- Prompts: `memory` / `remo` / `autogovern` render the paper's generator prompt (`prompts/solver/appworld.txt`, shows the
   playbook); `refine` and `react` render AppWorld's official ReAct prompt (`appworld_react.txt`), `react` in the plain
   scaffold without a critic call.
 - Solver, critic and consolidator: `--temperature 0`, `max_tokens` 8192 each (`--max-tokens`, `--critic-max-tokens`,
   `--consolidator-max-tokens`), world seed `--random-seed 123`; `--consolidator llm|append`; seed playbook
-  `--initial-playbook PATH` (default `benchmarks/appworld/initial_playbook.txt`) / `--no-initial-playbook`; AdaReMo
+  `--initial-playbook PATH` (default `benchmarks/appworld/initial_playbook.txt`) / `--no-initial-playbook`; AutoGovern
   stores only with `confidence` ≥ `--store-conf 0.7`.
 - Scoring is post hoc with AppWorld's unit tests (`appworld.evaluator.evaluate_task`, = `appworld evaluate <name> test_normal --root $APPWORLD_ROOT`):
   TGC = % tasks passing all assertions, SGC = % scenarios whose tasks all pass; `--eval-only` recomputes them.
@@ -203,7 +203,7 @@ No local ground truth: `answers.jsonl` is e-mailed to the organizers (https://fi
    export FH_VLLM_BASE_URL=$URL FH_VLLM_READER_BASE_URL=$URL FH_PIT_URL=http://PIT:8889 FH_EMBED_URL=http://EMBED:8888/v1/embeddings
    python ../../benchmarks/financegym/run_financegym.py --mode baseline --out ../../runs/financegym/baseline
    python ../../benchmarks/financegym/run_financegym.py --mode remo    --K 3 --out ../../runs/financegym/remo
-   python ../../benchmarks/financegym/run_financegym.py --mode adaremo --K 3 --out ../../runs/financegym/adaremo
+   python ../../benchmarks/financegym/run_financegym.py --mode autogovern --K 3 --out ../../runs/financegym/autogovern
    ```
 4. Submission: gzip `answers.jsonl` and e-mail it with the metadata block described on the benchmark page.
 

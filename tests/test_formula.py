@@ -247,7 +247,7 @@ class TestScoring(unittest.TestCase):
         pb = SectionedPlaybook.from_skeleton("counts")
         pb.apply_add_ops([{"type": "ADD", "section": "others", "content": "one"}, {"type": "ADD", "section": "others", "content": "two"}])
         pb.save(os.path.join(d, "playbook.txt"))
-        res = score_run(d, _rows(4), {"n_tasks": 4, "freeze_after": 2, "mode": "adaremo"})
+        res = score_run(d, _rows(4), {"n_tasks": 4, "freeze_after": 2, "mode": "autogovern"})
         self.assertEqual((res["n_scored"], res["complete"]), (3, False))
         self.assertAlmostEqual(res["accuracy"], 2 / 3, places=4); self.assertEqual(res["correct"], 2); self.assertEqual(res["no_answer"], 0)   # the sentinel is an answer (wrong), as in the runs
         self.assertAlmostEqual(res["round1_accuracy"], 1 / 3, places=4)
@@ -284,14 +284,14 @@ class TestRunner(unittest.TestCase):
         self.assertEqual((rf.config_for("react", 3).K, rf.config_for("react", 3).use_memory), (1, False))
         self.assertEqual((rf.config_for("refine", 3).K, rf.config_for("refine", 3).use_memory), (3, False))
         self.assertEqual((rf.config_for("memory", 3).K, rf.config_for("memory", 3).mode), (1, "remo"))
-        self.assertEqual(rf.config_for("remo", 2).mode, "remo"); self.assertTrue(rf.config_for("adaremo", 2).adaptive)
+        self.assertEqual(rf.config_for("remo", 2).mode, "remo"); self.assertTrue(rf.config_for("autogovern", 2).adaptive)
         with self.assertRaises(ValueError):
             rf.config_for("refine", 1)
 
     def test_freeze_after_and_resume(self):
         d = tempfile.mkdtemp()
         llm = FakeLLM()
-        cfg = RemoConfig(mode="adaremo", K=2)
+        cfg = RemoConfig(mode="autogovern", K=2)
         agent = self._agent(llm, cfg, d, LLMConsolidator(llm, 4, True), freeze_after=2)
         recs, learn_state = [], None
         for i, r in enumerate(_rows(4)):
@@ -331,7 +331,7 @@ class TestRunner(unittest.TestCase):
             return {"verdict": "no_errors", "critique": "ok", "refine": False, "store": False,
                     "novelty_reason": "covered by calc-00001 and calc-99999", "key_insight": "k"}
         llm = FakeLLM(critic=critic)
-        agent = self._agent(llm, RemoConfig(mode="adaremo", K=3), d, LLMConsolidator(llm, 3, True))
+        agent = self._agent(llm, RemoConfig(mode="autogovern", K=3), d, LLMConsolidator(llm, 3, True))
         rec = agent.run_task(_task(0), 0)
         self.assertEqual((rec["gate"], len(rec["rounds"]), rec["store_decision"], rec["entry_id"]), ("cross_round_validated", 2, "stored", "calc-00001"))
         self.assertIn(RETRY_REFLECTION.format(critique="scale {wrong}"), llm.prompts[2])          # solver retry

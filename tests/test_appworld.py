@@ -369,7 +369,7 @@ class TestSolveLoop(unittest.TestCase):
                                    **{**settings, "max_output_length": 25000})
         self.assertIn(NOT_SHOWN, [m["content"] for m in llm.requests[-1]])                    # trimmed at the scaffold's limit
         self.assertEqual(ra.solver_settings("refine"), {"template_path": REACT_PROMPT_PATH})
-        for mode in ("memory", "remo", "adaremo"):
+        for mode in ("memory", "remo", "autogovern"):
             self.assertEqual(ra.solver_settings(mode), {"template_path": SOLVER_PROMPT_PATH})
         self.assertEqual(REACT_MAX_OUTPUT_LENGTH, 50000)
 
@@ -426,14 +426,14 @@ class TestRecords(unittest.TestCase):
 
     def _agent(self, mode, K, solver, replies, cli_mode=None, **kw):
         llm = FakeLLM(replies)
-        critic = EnvCritic() if mode == "react" else AppWorldCritic(llm, adaptive=(mode == "adaremo"))
+        critic = EnvCritic() if mode == "react" else AppWorldCritic(llm, adaptive=(mode == "autogovern"))
         cons = LLMConsolidator(llm, log=lambda m: None)
         agent = ra.AppWorldAgent(ra.make_config(mode, K), solver, critic, ra.load_playbook(SEED), cons,
                                  cli_mode=cli_mode or mode, run_dir=self.d, **kw)
         return agent, llm
 
     def test_cross_round_records_and_resume(self):
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [False, True]), [REFL_BAD, REFL_OK, CONSOLIDATOR_OK])
+        agent, llm = self._agent("autogovern", 3, FakeSolver(self.misc, [False, True]), [REFL_BAD, REFL_OK, CONSOLIDATOR_OK])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"], rec["entry_id"], len(rec["rounds"])), ("cross_round_validated", "stored", "misc-00009", 2))
         self.assertIn("[misc-00009] New bullet.", agent.playbook.text)
@@ -445,7 +445,7 @@ class TestRecords(unittest.TestCase):
         # the consolidator got the flipping reflection with the prefix and the accepted attempt's history
         self.assertIn(VALIDATED_PREFIX + REFL_BAD, llm.requests[2][0]["content"]); self.assertTrue(llm.requests[2][0]["content"].endswith("HIST2"))
         eps = ra.read_episodes(self.d); e = eps[0]
-        self.assertEqual((e["task_id"], e["mode"], e["K"], e["playbook_entries"]), ("t1", "adaremo", 3, 9))
+        self.assertEqual((e["task_id"], e["mode"], e["K"], e["playbook_entries"]), ("t1", "autogovern", 3, 9))
         self.assertEqual(e["rounds"][0]["solver"]["steps"], 4); self.assertEqual(e["rounds"][1]["critic"]["confidence"], 0.9)
         self.assertEqual(e["rounds"][0]["raw"], REFL_BAD); self.assertEqual(e["elapsed_s"], 3.0)
         tj = json.load(open(os.path.join(self.d, "trajs", "t1.json")))
@@ -454,7 +454,7 @@ class TestRecords(unittest.TestCase):
         self.assertTrue(rr["clean"]); self.assertEqual(rr["curation"], "cross_round_validated")
         self.assertEqual(rr["rounds"][0]["reflection"], REFL_BAD); self.assertEqual(rr["rounds"][1]["confidence"], 0.9)
         self.assertEqual([(r["env_clean"], r["verdict_no_errors"], r["store"]) for r in rr["rounds"]], [(False, False, False), (True, True, True)])
-        agent2, _ = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [])
+        agent2, _ = self._agent("autogovern", 3, FakeSolver(self.misc, [True]), [])
         self.assertEqual(agent2.done_indices(), {0}); self.assertEqual(len(agent2.playbook), 9)
 
     def test_round1_clean_stores_the_whole_reflection_and_reinforce(self):
@@ -462,7 +462,7 @@ class TestRecords(unittest.TestCase):
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"]), ("round1_clean", "stored"))
         self.assertIn("`" + REFL_OK + "`", llm.requests[1][0]["content"])
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_DUP])
+        agent, llm = self._agent("autogovern", 3, FakeSolver(self.misc, [True]), [REFL_DUP])
         rec = ra.run_task(agent, "t2", 1, self.d, log=lambda m: None)
         self.assertEqual((rec["store_decision"], rec["entry_id"], len(llm.requests)), ("reinforced", "psw-00007", 1))
         self.assertIn("[psw-00007] Many APIs return items in \"pages\". Make sure to run through all the pages by looping over `page_index`. [confirmed x2]",
@@ -478,7 +478,7 @@ class TestRecords(unittest.TestCase):
         self.assertEqual((rec["gate"], rec["store_decision"], len(rec["rounds"]), len(llm.requests)), ("never_clean", "skipped", 2, 2))
 
     def test_low_confidence_store_is_skipped(self):
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_LOW])
+        agent, llm = self._agent("autogovern", 3, FakeSolver(self.misc, [True]), [REFL_LOW])
         rec = ra.run_task(agent, "t1", 0, self.d, log=lambda m: None)
         self.assertEqual((rec["gate"], rec["store_decision"], rec["entry_id"], len(llm.requests)), ("round1_clean", "skipped_lowconf", "", 1))
         self.assertEqual(agent.playbook.text, SectionedPlaybook.load(SEED, "plain").text)     # neither stored nor reinforced
@@ -489,11 +489,11 @@ class TestRecords(unittest.TestCase):
         rr = json.load(open(os.path.join(self.misc, "remo_rounds.json")))
         self.assertEqual((rr["rounds"][0]["store"], rr["store_decision"]), (True, "skipped_lowconf"))
         # frozen memory at a probe index: a low-confidence store neither unfreezes nor writes
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_LOW])
+        agent, llm = self._agent("autogovern", 3, FakeSolver(self.misc, [True]), [REFL_LOW])
         agent.policy.frozen, agent.policy.store_window = True, [False] * 20
         rec = ra.run_task(agent, "t2", 19, self.d, log=lambda m: None)
         self.assertEqual((rec["store_decision"], agent.policy.frozen, agent.policy.store_window[-1], len(llm.requests)), ("skipped_lowconf", True, False, 1))
-        agent, llm = self._agent("adaremo", 3, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK])
+        agent, llm = self._agent("autogovern", 3, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK])
         agent.policy.frozen, agent.policy.store_window = True, [False] * 17 + [True] * 3
         rec = ra.run_task(agent, "t3", 19, self.d, log=lambda m: None)                        # confident store: probe unfreezes
         self.assertEqual((rec["store_decision"], agent.policy.frozen, len(llm.requests)), ("stored", False, 2))
@@ -506,7 +506,7 @@ class TestRecords(unittest.TestCase):
         self.assertEqual(ra.run_task(agent, "t2", 1, self.d, log=lambda m: None)["gate"], "never_clean")
 
     def test_freeze_after_reads_but_never_writes(self):
-        agent, llm = self._agent("adaremo", 1, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK, REFL_OK], freeze_after=1)
+        agent, llm = self._agent("autogovern", 1, FakeSolver(self.misc, [True]), [REFL_OK, CONSOLIDATOR_OK, REFL_OK], freeze_after=1)
         ra.run_task(agent, "t0", 0, self.d, log=lambda m: None)      # index 0 < A: consolidates
         ra.run_task(agent, "t1", 1, self.d, log=lambda m: None)      # index 1 >= A: read-only, no consolidator call
         eps = ra.read_episodes(self.d)
@@ -538,7 +538,7 @@ class TestRecords(unittest.TestCase):
         c = ra.make_config("refine", 3); self.assertEqual((c.mode, c.K, c.use_memory), ("remo", 3, False))
         c = ra.make_config("memory", None); self.assertEqual((c.mode, c.K, c.use_memory), ("remo", 1, True))
         c = ra.make_config("remo", None); self.assertEqual((c.mode, c.K, c.use_memory), ("remo", 3, True))
-        c = ra.make_config("adaremo", 2, redundant_mode="gate"); self.assertTrue(c.adaptive); self.assertEqual((c.K, c.redundant_mode), (2, "gate"))
+        c = ra.make_config("autogovern", 2, redundant_mode="gate"); self.assertTrue(c.adaptive); self.assertEqual((c.K, c.redundant_mode), (2, "gate"))
         for bad in (("react", 3), ("refine", 1)):
             with self.assertRaises(SystemExit):
                 ra.make_config(*bad)
@@ -580,10 +580,10 @@ class TestStructuralMode(unittest.TestCase):
         self.assertIn("two decisions", c.llm.requests[0][0]["content"])
 
     def test_config_cli_and_readonly_playbook(self):
-        cfg = ra.make_config("adaremo", 3, "structural")
+        cfg = ra.make_config("autogovern", 3, "structural")
         self.assertEqual((cfg.redundant_mode, cfg.structural), ("structural", True))
-        self.assertFalse(ra.make_config("remo", 3, "structural").structural)               # structural is an AdaReMo option
-        a = ra.build_parser().parse_args(["--mode", "adaremo", "--out", "x", "--redundant-mode", "structural",
+        self.assertFalse(ra.make_config("remo", 3, "structural").structural)               # structural is an AutoGovern option
+        a = ra.build_parser().parse_args(["--mode", "autogovern", "--out", "x", "--redundant-mode", "structural",
                                           "--redundancy-judge", "lexical"])
         self.assertEqual((a.redundancy_judge, a.redundancy_k), ("lexical", 3))
         ro = ra.ReadOnlyPlaybook(SectionedPlaybook.from_skeleton("plain"))
@@ -608,7 +608,7 @@ class TestFrozenClockGuard(unittest.TestCase):
             self.assertTrue(ra.clock_is_frozen())
 
     def test_evaluate_in_subprocess_builds_an_eval_only_command(self):
-        a = ra.build_parser().parse_args(["--mode", "adaremo", "--K", "3", "--out", "/tmp/run", "--split", "test_challenge",
+        a = ra.build_parser().parse_args(["--mode", "autogovern", "--K", "3", "--out", "/tmp/run", "--split", "test_challenge",
                                           "--root", "/tmp/aw", "--redundant-mode", "structural", "--limit", "5"])
         with mock.patch.object(ra.subprocess, "call", return_value=0) as call:
             self.assertEqual(ra.evaluate_in_subprocess(a, log=lambda m: None), 0)

@@ -22,7 +22,7 @@ CONSOLIDATOR_PROMPT = read_prompt("consolidator/formula.txt")
 
 def lesson_text(episode: EpisodeState, adaptive: bool) -> str:
     """The reflection handed to the consolidator: the gate, the number of rounds, the accepting round's critique and
-    key insight; AdaReMo adds the critic's novelty reason."""
+    key insight; AutoGovern adds the critic's novelty reason."""
     n, last = len(episode.rounds), episode.last
     text = (f"[validated: {RemoPolicy.gate(episode)}] The final answer passed independent review"
             f"{' after ' + str(n) + ' rounds of refinement' if n > 1 else ''}. "

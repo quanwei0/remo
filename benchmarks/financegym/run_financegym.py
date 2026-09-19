@@ -1,9 +1,9 @@
-"""ReMo / AdaReMo (and the baseline arms) on FinanceGym: 400 open-ended point-in-time finance research
+"""ReMo / AutoGovern (and the baseline arms) on FinanceGym: 400 open-ended point-in-time finance research
 questions, no local ground truth — the organizers grade the submitted reports.
 
 Arms (--mode): baseline = the official FinanceHarness alone (one attempt, no critic, no memory — the
 leaderboard entry and the ReAct arm of this benchmark); the other arms wrap the same harness: refine (K>1,
-no memory), memory (K=1 with memory, i.e. remo --K 1), remo (Algorithm 1), adaremo (Algorithm 2). The arms with a
+no memory), memory (K=1 with memory, i.e. remo --K 1), remo (Algorithm 1), autogovern (Algorithm 2). The arms with a
 critic still call it at K=1; with no retry its verdict only drives the outcome gate, so memory isolates the memory
 from the refinement loop. --freeze-after A consolidates on the first A tasks and runs the
 rest with the memory read-only (they wait until the A learning tasks have finished).
@@ -29,7 +29,7 @@ Run from the harness root (its configs/*.json are resolved from there), env `rem
   cd third_party/finance_harness
   export FH_VLLM_BASE_URL=$URL FH_VLLM_READER_BASE_URL=$URL FH_PIT_URL=http://PIT:8889 \\
          FH_EMBED_URL=http://EMBED:8888/v1/embeddings
-  python ../../benchmarks/financegym/run_financegym.py --mode adaremo --K 3 --out ../../runs/financegym/adaremo
+  python ../../benchmarks/financegym/run_financegym.py --mode autogovern --K 3 --out ../../runs/financegym/autogovern
 """
 import argparse
 import asyncio
@@ -236,9 +236,9 @@ async def run_all(tasks: list[dict], rs: RunState, solver, critic, conc: int, mi
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=MODES,
+    p.add_argument("--mode", required=True, choices=tuple(MODES) + ("adaremo",),
                    help="baseline = official harness alone (the ReAct arm); refine / memory = ablation arms on the "
-                        "same harness; remo = Alg. 1; adaremo = Alg. 2")
+                        "same harness; remo = Alg. 1; autogovern = Alg. 2")
     p.add_argument("--K", type=int, default=None, help="round budget per task (default 1 for baseline/memory, else 3)")
     p.add_argument("--out", required=True, help="run dir (resumable)")
     p.add_argument("--limit", type=int, default=0, help="first N benchmark tasks (0 = all 400)")
@@ -249,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=os.environ.get("FIN_MODEL", DEFAULT_MODEL),
                    help="served model name, used for the harness backbone + reader and for the critic")
     p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off"],
-                   help="AdaReMo: what to do with a lesson the critic judges already covered")
+                   help="AutoGovern: what to do with a lesson the critic judges already covered")
     p.add_argument("--critic-variant", default="paper", choices=list(CRITIC_VARIANTS),
                    help="paper = the submitted runs' critic / retry / lessons (default). coverage = coverage-audit critic, "
                         "superset retry that sees the previous report, checklist lessons (see common.py); NOT the "
@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "--critic-variant coverage, whose reply lists the expected and missing items); the critic sends no "
                         "temperature: the server default applies")
     p.add_argument("--llm-timeout-s", type=float, default=600.0)
-    # memory / AdaReMo knobs (defaults = RemoConfig defaults; inject cap 30000 chars as in the paper's runs)
+    # memory / AutoGovern knobs (defaults = RemoConfig defaults; inject cap 30000 chars as in the paper's runs)
     p.add_argument("--inject-cap", type=int, default=None,
                    help=f"playbook chars prepended to the question (default {INJECT_CAP_CHARS} as in the paper's runs; "
                         f"{INJECT_CAP_CHARS_COVERAGE} with --critic-variant coverage)")
@@ -297,6 +297,8 @@ def write_final_results(run_dir: str, tasks_path: str, extra: dict | None = None
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.mode == "adaremo":                       # the method's former name
+        args.mode = "autogovern"
     base_url = args.base_url or os.environ.get("FH_VLLM_BASE_URL") or os.environ.get("REMO_BASE_URL") \
         or "http://localhost:8125/v1"
     reader_base_url = os.environ.get("FH_VLLM_READER_BASE_URL") or base_url
@@ -321,7 +323,7 @@ def main(argv=None) -> int:
         raise SystemExit(str(e))
     args.K = cfg.K
     if args.freeze_after is not None and not cfg.use_memory:
-        raise SystemExit(f"--freeze-after needs a memory arm (memory/remo/adaremo), not --mode {args.mode}")
+        raise SystemExit(f"--freeze-after needs a memory arm (memory/remo/autogovern), not --mode {args.mode}")
 
     from benchmarks.financegym.solver import FinanceGymSolver    # applies the harness runtime patches
     import openai
@@ -330,7 +332,10 @@ def main(argv=None) -> int:
     cfg_path = os.path.join(args.out, "run_config.json")
     prev = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}  # noqa: SIM115 (tiny, read once)
     for k in ("mode", "K", "freeze_after", "critic_variant"):
-        if prev and prev.get(k, "paper" if k == "critic_variant" else None) != getattr(args, k):
+        pv = prev.get(k, "paper" if k == "critic_variant" else None)
+        if k == "mode" and pv == "adaremo":
+            pv = "autogovern"                                # old run dirs were started under the method's former name
+        if prev and pv != getattr(args, k):
             raise SystemExit(f"run dir {args.out} was started with {k}={prev.get(k)}; refusing {k}={getattr(args, k)}")
     with open(cfg_path, "w") as f:
         json.dump({**vars(args), "base_url": base_url, "reader_base_url": reader_base_url,

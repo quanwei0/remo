@@ -1,6 +1,6 @@
 """Formula critic (the paper's `Reflect`): one chat call per round with the prompts used for the paper's runs.
 
-prompts/critic/formula_remo.txt (ReMo) takes {q} {trace} {answer}; prompts/critic/formula_adaremo.txt (AdaReMo)
+prompts/critic/formula_remo.txt (ReMo) takes {q} {trace} {answer}; prompts/critic/formula_autogovern.txt (AutoGovern)
 also {rnd} {K} {prior} (the previous round's critique, "(none — first attempt)" without one) and {playbook} (the
 whole playbook text). {trace} is the solver's full reply, {answer} the extracted answer. The reply is parsed by
 remo.critic.parse_reflection with the greedy JSON locator, no re-ask; cited ids are read from novelty_reason
@@ -15,7 +15,7 @@ from remo.interfaces import Reflection, Trajectory
 CRITIC_MAX_TOKENS = 8192
 NO_PRIOR = "(none — first attempt)"
 EMPTY_PLAYBOOK = "(empty)"
-CRITIC_PROMPTS = {False: read_prompt("critic/formula_remo.txt"), True: read_prompt("critic/formula_adaremo.txt")}
+CRITIC_PROMPTS = {False: read_prompt("critic/formula_remo.txt"), True: read_prompt("critic/formula_autogovern.txt")}
 
 
 def build_critic_prompt(task: dict, traj: Trajectory, memory_text: str, prior_critique: str | None, round_idx: int,

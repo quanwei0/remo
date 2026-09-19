@@ -1,5 +1,5 @@
 """AppWorld critic (the paper's `Reflect`): one chat call over the prompt used for the paper's runs
-(prompts/critic/appworld_remo.txt for ReMo, prompts/critic/appworld_adaremo.txt for AdaReMo) with the
+(prompts/critic/appworld_remo.txt for ReMo, prompts/critic/appworld_autogovern.txt for AutoGovern) with the
 whole playbook, the previous round's reflection (or "N/A") and the conversation history of the attempt.
 No ground truth, no test result, no code execution.
 
@@ -7,7 +7,7 @@ The reply is parsed as the runs parsed it: JSON located by remo.critic.extract_j
 `trajectory_verdict` compared case-insensitively to "no_errors", a verdict that is neither parseable
 nor quoted in the text follows the objective env_clean signal; `key_insight` is the lesson; refine
 defaults to True and store to False; the whole reply is the critique the next round receives and the
-text the consolidator stores. The AdaReMo prompt also asks for `confidence`, and the runs honoured a
+text the consolidator stores. The AutoGovern prompt also asks for `confidence`, and the runs honoured a
 `store` only with confidence >= store_conf (0.7): below it the reflection reaches the policy with
 store=False and no cited entry, so nothing is written or reinforced and the saturation window records
 no memory demand (the runs' `skipped_lowconf`); the record keeps what the critic said.
@@ -25,10 +25,10 @@ from benchmarks.appworld.solver import EMPTY_PLAYBOOK, read_prompt
 
 ROOT = Path(__file__).resolve().parents[2]
 CRITIC_PROMPT_PATHS = {False: ROOT / "prompts" / "critic" / "appworld_remo.txt",
-                       True: ROOT / "prompts" / "critic" / "appworld_adaremo.txt",
-                       # redundant_mode "structural": the AdaReMo prompt without the store / novelty duties and with a
+                       True: ROOT / "prompts" / "critic" / "appworld_autogovern.txt",
+                       # redundant_mode "structural": the AutoGovern prompt without the store / novelty duties and with a
                        # specificity requirement on key_insight (the redundancy check reads that field)
-                       "structural": ROOT / "prompts" / "critic" / "appworld_adaremo_structural.txt"}
+                       "structural": ROOT / "prompts" / "critic" / "appworld_autogovern_structural.txt"}
 SEE_HISTORY = "See full conversation history below"
 NO_PRIOR = "N/A"
 
@@ -72,7 +72,7 @@ def parse_critic_reply(text: str, adaptive: bool, env_clean: bool) -> tuple[Refl
 class AppWorldCritic:
     """One chat call per round. A transport failure (after the client's retries) returns
     Reflection(failed=True): the episode stops, nothing is admitted or written. `store_conf` is the
-    confidence a `store` needs (AdaReMo; the ReMo prompt has neither field)."""
+    confidence a `store` needs (AutoGovern; the ReMo prompt has neither field)."""
 
     def __init__(self, llm, adaptive: bool, max_tokens: int = 8192, temperature: float = 0.0,
                  store_conf: float = 0.7, log=print, prompt_path: Path | None = None):

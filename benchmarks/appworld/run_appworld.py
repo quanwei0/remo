@@ -1,8 +1,8 @@
-"""ReMo / AdaReMo on AppWorld (the `appworld` package at the revision pinned in pyproject.toml, data 0.1.0;
+"""ReMo / AutoGovern on AppWorld (the `appworld` package at the revision pinned in pyproject.toml, data 0.1.0;
 `test_normal` = 168 tasks / 56 scenarios).
 
-Arms:  --mode react (K=1, no memory) | refine (K>1, no memory) | memory (K=1, = remo --K 1) | remo | adaremo.
-adaremo --redundant-mode structural: the critic (prompts/critic/appworld_adaremo_structural.txt) writes a specific
+Arms:  --mode react (K=1, no memory) | refine (K>1, no memory) | memory (K=1, = remo --K 1) | remo | autogovern.
+autogovern --redundant-mode structural: the critic (prompts/critic/appworld_autogovern_structural.txt) writes a specific
 key_insight and no store decision; remo.redundancy retrieves the lexically closest non-seed bullets and a judge call
 decides coverage — covered: the bullet is reinforced ([confirmed xN]); else the episode is consolidated as usual. Records carry a "redundancy" field, final_results a "redundancy_decisions" count.
 The K=1 arms still call the critic; without a retry its verdict only drives the outcome gate (react writes nothing,
@@ -59,7 +59,8 @@ PLAYBOOK_STYLE = "plain"
 DEFAULT_MODEL = "GPT-OSS-120B"
 # cli mode -> (core mode, use_memory, fixed K or None)
 MODES = {"react": ("remo", False, 1), "refine": ("remo", False, None), "memory": ("remo", True, 1),
-         "remo": ("remo", True, None), "adaremo": ("adaremo", True, None)}
+         "remo": ("remo", True, None), "autogovern": ("autogovern", True, None)}
+MODE_ALIASES = {"adaremo": "autogovern"}        # the method's former name: accepted on the command line and in old run_config.json files
 
 
 def _log(msg: str) -> None:
@@ -366,7 +367,8 @@ def summarize(eps: list[dict], playbook: SectionedPlaybook, final_eval: dict | N
 # -- CLI ----------------------------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=sorted(MODES), help="paper arm (see README 'Arms')")
+    p.add_argument("--mode", required=True, choices=sorted(MODES) + sorted(MODE_ALIASES),
+                   help="paper arm (see README 'Arms'); adaremo = the former name of autogovern")
     p.add_argument("--K", type=int, default=None, help="round budget per task (default 3; react/memory fix K=1)")
     p.add_argument("--out", required=True, help="run dir (resumable)")
     p.add_argument("--limit", type=int, default=0, help="first N tasks of the split (0 = all)")
@@ -375,16 +377,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="OpenAI-compatible base url (solver, critic, consolidator)")
     p.add_argument("--model", default=os.environ.get("REMO_MODEL", DEFAULT_MODEL))
     p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off", "structural"],
-                   help="adaremo: what happens to a lesson the memory already holds. reinforce/gate/off = the critic decides "
+                   help="autogovern: what happens to a lesson the memory already holds. reinforce/gate/off = the critic decides "
                         "(store + novelty_reason); structural = the critic only writes a specific key_insight and a "
                         "RedundancyChecker (lexical retrieval + judge) decides: covered -> reinforce the entry, else consolidate "
-                        "(critic prompt appworld_adaremo_structural.txt)")
+                        "(critic prompt appworld_autogovern_structural.txt)")
     p.add_argument("--redundancy-judge", default="llm", choices=["llm", "lexical"],
                    help="structural: judge the retrieved candidates with the model (default) or by lexical similarity alone")
     p.add_argument("--redundancy-k", type=int, default=3, help="structural: candidates retrieved per lesson")
     p.add_argument("--redundancy-min-sim", type=float, default=0.15, help="structural: minimum lexical similarity of a candidate")
     p.add_argument("--redundancy-threshold", type=float, default=0.6, help="structural + lexical judge: similarity that counts as covered")
-    p.add_argument("--store-conf", type=float, default=0.7, help="adaremo: a store the critic asserts with lower confidence is skipped")
+    p.add_argument("--store-conf", type=float, default=0.7, help="autogovern: a store the critic asserts with lower confidence is skipped")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="learn-then-freeze: consolidate on the first A tasks, then run with the memory read-only")
     p.add_argument("--consolidator", default="llm", choices=["llm", "append"],
@@ -419,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    args.mode = MODE_ALIASES.get(args.mode, args.mode)
     if not args.root:
         raise SystemExit("set APPWORLD_ROOT (or --root) to the directory holding data/ (appworld download data)")
     import appworld
@@ -441,7 +444,8 @@ def main(argv=None) -> int:
             prev = json.load(f)
     for k in ("mode", "K", "split", "experiment_name", "consolidator", "initial_playbook", "model"):
         v = experiment if k == "experiment_name" else initial_playbook if k == "initial_playbook" else getattr(args, k)
-        if prev and prev.get(k) not in (None, v):
+        pv = MODE_ALIASES.get(prev.get(k), prev.get(k)) if k == "mode" else prev.get(k)
+        if prev and pv not in (None, v):
             raise SystemExit(f"run dir {args.out} was started with {k}={prev.get(k)}; refusing {k}={v}")
     with open(cfg_path, "w") as f:
         json.dump({**vars(args), "experiment_name": experiment, "round1_experiment": round1_experiment,

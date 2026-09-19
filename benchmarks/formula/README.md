@@ -1,4 +1,4 @@
-# benchmarks/formula — ReMo / AdaReMo on Formula (numeric financial QA)
+# benchmarks/formula — ReMo / AutoGovern on Formula (numeric financial QA)
 
 200 questions from the FinLoRA Formula test set: each row is `{"context": "<instruction incl. the formula>
 Question: \"...\". Answer:", "target": "15.0"}`. The loop sees the question text plus the fixed answer-format
@@ -9,8 +9,8 @@ A prediction is correct iff it equals the target as a float (commas stripped). M
 | paper | here |
 |---|---|
 | `Solve(task, M, ρ)` | `solver.FormulaSolver`: one chat call with `prompts/solver/formula.txt` (playbook text, reflection, question, empty context); `extract_answer` reads the JSON `final_answer` with the runs' fallbacks (`Finish[...]`, `"final_answer":` regexes, `\boxed{}`, "the final answer is") and the `No final answer found` sentinel |
-| `Reflect` | `critic.FormulaCritic`: `prompts/critic/formula_remo.txt` (ReMo) / `formula_adaremo.txt` (AdaReMo: round, previous critique, whole playbook); parsed by `remo.critic.parse_reflection` (greedy JSON locator, no re-ask) |
-| memory `M` | `remo.SectionedPlaybook` style `counts` (7-section skeleton, `[calc-00012] helpful=0 harmful=0 :: <text>`); the whole text is injected into the solver and, in AdaReMo, into the critic |
+| `Reflect` | `critic.FormulaCritic`: `prompts/critic/formula_remo.txt` (ReMo) / `formula_autogovern.txt` (AutoGovern: round, previous critique, whole playbook); parsed by `remo.critic.parse_reflection` (greedy JSON locator, no re-ask) |
+| memory `M` | `remo.SectionedPlaybook` style `counts` (7-section skeleton, `[calc-00012] helpful=0 harmful=0 :: <text>`); the whole text is injected into the solver and, in AutoGovern, into the critic |
 | `Consolidate` | `consolidator.LLMConsolidator` (default): `prompts/consolidator/formula.txt` with token budget 80000, step / total, playbook stats, the lesson built from the accepting round, the playbook and the question; ADD operations applied through `SectionedPlaybook`. `--consolidator append`: the key insight becomes one bullet in OTHERS, no call |
 | Alg. 1 / 2 | `remo.ReMoAgent`, sequential over the 200 questions; `run_formula.FormulaAgent` adds per-round bookkeeping, `consolidator_error`, and the read-only phase of `--freeze-after` |
 
@@ -21,7 +21,7 @@ A prediction is correct iff it equals the target as a float (commas stripped). M
 - Reflection sent to the solver: `(empty)` on the first attempt, then
   `A reviewer found problems with your previous attempt. Reviewer critique:\n<critique>`.
 - Lesson sent to the consolidator: `[validated: <gate>] The final answer passed independent review[ after N rounds of
-  refinement]. Reviewer assessment: <critique>\nKey reusable insight: <key_insight>`; AdaReMo appends
+  refinement]. Reviewer assessment: <critique>\nKey reusable insight: <key_insight>`; AutoGovern appends
   `\nWhy this is new to the playbook: <novelty_reason>`.
 - A failed solver or critic call ends the episode (not admitted; the round is counted); a failed consolidator call or an
   unusable consolidator reply leaves the playbook unchanged and records `store_decision: consolidator_error`.
@@ -42,11 +42,11 @@ data/             formula_test.sha256 (manifest) + README; the questions themsel
 ```bash
 python benchmarks/formula/prepare_data.py --out data/formula_test.jsonl        # 200 of 200 rows must match
 URL=http://HOST:8125/v1
-python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
-       --base-url $URL --model GPT-OSS-120B --out runs/formula/adaremo_k3_r1
+python benchmarks/formula/run_formula.py --mode autogovern --K 3 --data data/formula_test.jsonl \
+       --base-url $URL --model GPT-OSS-120B --out runs/formula/autogovern_k3_r1
 ```
 
-`--mode react | refine | memory | remo | adaremo` (ReAct = remo, K=1, no memory; refinement only = remo, K>1, no
+`--mode react | refine | memory | remo | autogovern` (ReAct = remo, K=1, no memory; refinement only = remo, K>1, no
 memory; memory only = remo, K=1), `--K` (default 3), `--limit N` (first N questions), `--redundant-mode
 {reinforce,gate,off}`, `--freeze-after A` (consolidate on the first A questions, then read-only memory),
 `--consolidator {llm,append}`, `--freeze-w 20 --freeze-rho 0.1 --probe-p 20`, `--token-budget 80000`,

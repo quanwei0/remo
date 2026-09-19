@@ -1,8 +1,8 @@
-"""ReMo / AdaReMo on Formula (200 numeric financial questions, exact-match accuracy scored post hoc).
+"""ReMo / AutoGovern on Formula (200 numeric financial questions, exact-match accuracy scored post hoc).
 
 Arms are configurations of the one loop (remo.ReMoAgent):
   --mode react    remo, K=1, no memory          --mode refine  remo, K>1, no memory
-  --mode memory   remo, K=1, memory             --mode remo    Alg. 1        --mode adaremo  Alg. 2
+  --mode memory   remo, K=1, memory             --mode remo    Alg. 1        --mode autogovern  Alg. 2
 The K=1 arms still run the critic; with no retry its verdict only drives the outcome gate, so `memory` is exactly
 `remo --K 1` (memory without refinement) and `react` is that arm with the memory switched off.
 
@@ -10,8 +10,8 @@ Run dir (resumable): episodes.jsonl (one line per finished question; present ind
 (full replies), playbook.txt, policy_state.json, run_config.json and, at the end, final_results.json.
 The targets are never read inside the loop.
 
-  python benchmarks/formula/run_formula.py --mode adaremo --K 3 --data data/formula_test.jsonl \
-         --base-url http://HOST:8125/v1 --model GPT-OSS-120B --out runs/formula/adaremo_k3_r1
+  python benchmarks/formula/run_formula.py --mode autogovern --K 3 --data data/formula_test.jsonl \
+         --base-url http://HOST:8125/v1 --model GPT-OSS-120B --out runs/formula/autogovern_k3_r1
 """
 import argparse
 import json
@@ -33,7 +33,8 @@ from benchmarks.formula.solver import (DEFAULT_BASE_URL, DEFAULT_MODEL, SOLVER_M
                                        FormulaSolver)
 from remo import ReMoAgent, RemoConfig, SectionedPlaybook                                         # noqa: E402
 
-MODES = ("react", "refine", "memory", "remo", "adaremo")
+MODES = ("react", "refine", "memory", "remo", "autogovern")
+MODE_ALIASES = {"adaremo": "autogovern"}        # the method's former name: accepted on the command line and in old run_config.json files
 LOCKED = ("mode", "K", "redundant_mode", "freeze_after", "consolidator", "model", "data_sha256")   # fixed for a run dir
 
 
@@ -51,7 +52,7 @@ def config_for(mode: str, K: int, **knobs) -> RemoConfig:
         return RemoConfig(mode="remo", K=K, use_memory=False, **knobs)
     if mode == "memory":
         return RemoConfig(mode="remo", K=1, use_memory=True, **knobs)
-    if mode in ("remo", "adaremo"):
+    if mode in ("remo", "autogovern"):
         return RemoConfig(mode=mode, K=K, use_memory=True, **knobs)
     raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
 
@@ -145,9 +146,9 @@ class FormulaAgent(ReMoAgent):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--mode", required=True, choices=MODES,
+    p.add_argument("--mode", required=True, choices=MODES + tuple(MODE_ALIASES),
                    help="configurations of the ReMo loop: react = K=1, no memory; refine = refinement only: the ReMo loop "
-                        "without memory (K>=2); memory = K=1 with memory; remo = Alg. 1; adaremo = Alg. 2")
+                        "without memory (K>=2); memory = K=1 with memory; remo = Alg. 1; autogovern = Alg. 2")
     p.add_argument("--K", type=int, default=None, help="round budget per question (default 3; react / memory are K=1 arms)")
     p.add_argument("--out", required=True, help="run dir (resumable)")
     p.add_argument("--limit", type=int, default=0, help="first N questions (0 = all)")
@@ -155,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="OpenAI-compatible endpoint ($REMO_BASE_URL)")
     p.add_argument("--model", default=os.environ.get("REMO_MODEL", DEFAULT_MODEL))
     p.add_argument("--redundant-mode", default="reinforce", choices=["reinforce", "gate", "off"],
-                   help="AdaReMo: what happens to a lesson the critic judges already covered")
+                   help="AutoGovern: what happens to a lesson the critic judges already covered")
     p.add_argument("--freeze-after", type=int, default=None, metavar="A",
                    help="consolidate on the first A questions, then run with the memory read-only")
     p.add_argument("--consolidator", default="llm", choices=["llm", "append"],
@@ -175,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    args.mode = MODE_ALIASES.get(args.mode, args.mode)
     K_given, args.K = args.K, (3 if args.K is None else args.K)
     try:
         cfg = config_for(args.mode, args.K, redundant_mode=args.redundant_mode, freeze_w=args.freeze_w,
@@ -201,8 +203,9 @@ def main(argv=None) -> int:
         with open(cfg_path) as f:
             prev = json.load(f)
     for k in LOCKED:
-        if prev and prev.get(k) != config.get(k):
-            raise SystemExit(f"run dir {args.out} was started with {k}={prev.get(k)!r}; refusing {k}={config.get(k)!r}")
+        pv = MODE_ALIASES.get(prev.get(k), prev.get(k)) if k == "mode" else prev.get(k)   # old run dirs were started as "adaremo"
+        if prev and pv != config.get(k):
+            raise SystemExit(f"run dir {args.out} was started with {k}={pv!r}; refusing {k}={config.get(k)!r}")
     config["started"] = prev.get("started") or time.strftime("%Y-%m-%d %H:%M:%S")
     with open(cfg_path, "w") as f:
         json.dump(config, f, indent=1)

@@ -1,7 +1,7 @@
 """FinanceGym adapter: what the paper's runs sent and how they read the replies (prompt file formatted with
 the original arguments, exact question strings, critic call parameters, parse fallbacks, playbook line
 format and cap ranking), plus the async concurrent driver over RemoPolicy (fake solver/critic, no harness,
-no LLM) — persistence/resume, the min-docs floor, AdaReMo reinforce, the baseline and ablation arms,
+no LLM) — persistence/resume, the min-docs floor, AutoGovern reinforce, the baseline and ablation arms,
 learn-then-freeze, the retry-round budget, the quality floor and the post-hoc summary."""
 import asyncio
 import json
@@ -244,7 +244,7 @@ class TestDriver(unittest.TestCase):
         self.assertEqual(seen["t001"], 3); self.assertEqual(len(rs.playbook), 1)
         self.assertEqual(rs.extra_rounds_used, 3)                # 1 (t000) + 2 (t001, unsaved rounds count too)
 
-    def test_adaremo_reinforce_one_cited_entry_and_critic_stop(self):
+    def test_autogovern_reinforce_one_cited_entry_and_critic_stop(self):
         tasks = _tasks(4)
         def fn(t, tr, m, r):
             if t["task_id"] == "t000":
@@ -254,7 +254,7 @@ class TestDriver(unittest.TestCase):
             if t["task_id"] == "t002":       # id only in novelty_reason; the second id is not voted on
                 return Reflection("correct", lesson="dup", store=False, novelty_reason="covered by [fin-00001], [fin-00002]")
             return Reflection("correct", lesson="dup", store=False, cited_id="[fin-00009]", novelty_reason="[fin-00001]")
-        rs = RunState(RemoConfig(mode="adaremo", K=3), self.d)
+        rs = RunState(RemoConfig(mode="autogovern", K=3), self.d)
         s = _run(tasks, rs, FakeSolver(), FakeCritic(fn), conc=1)      # conc=1: t000 stored before t002 cites it
         self.assertEqual(s["gates"], {"round1_clean": 3, "critic_stop": 1})
         self.assertEqual(s["store_decisions"], {"stored": 1, "skipped": 1, "reinforced": 1, "discarded": 1})
@@ -269,7 +269,7 @@ class TestDriver(unittest.TestCase):
         def fn(t, tr, m, r):
             return Reflection("correct", store=False, cited_id="fin-00001") if t["task_id"] == "t001" \
                 else Reflection("correct", lesson="L", store=True)
-        rs = RunState(RemoConfig(mode="adaremo", K=1), self.d)
+        rs = RunState(RemoConfig(mode="autogovern", K=1), self.d)
         s = _run(_tasks(2), rs, FakeSolver(), FakeCritic(fn), conc=1)
         self.assertEqual(s["store_decisions"], {"stored": 1, "skipped": 1})
         self.assertEqual(rs.playbook.get("fin-00001").helpful, 1)
@@ -292,8 +292,8 @@ class TestDriver(unittest.TestCase):
         self.assertEqual(make_config("baseline", None)[0].K, 1); self.assertFalse(make_config("baseline", None)[0].use_memory)
         self.assertEqual(make_config("refine", 3)[0].K, 3); self.assertFalse(make_config("refine", None)[0].use_memory)
         self.assertTrue(make_config("memory", None)[0].use_memory); self.assertEqual(make_config("memory", 1)[0].K, 1)
-        self.assertEqual(make_config("remo", None)[0].mode, "remo"); self.assertEqual(make_config("adaremo", 5)[0].K, 5)
-        self.assertEqual(make_config("adaremo", None, redundant_mode="gate")[0].redundant_mode, "gate")
+        self.assertEqual(make_config("remo", None)[0].mode, "remo"); self.assertEqual(make_config("autogovern", 5)[0].K, 5)
+        self.assertEqual(make_config("autogovern", None, redundant_mode="gate")[0].redundant_mode, "gate")
         for bad in (("memory", 2), ("baseline", 2), ("refine", 1), ("react", None), ("nope", None)):
             with self.assertRaises(ValueError):
                 make_config(*bad)
@@ -377,11 +377,11 @@ class TestDriver(unittest.TestCase):
             if t["task_id"] == "t002":
                 return Reflection("correct", parsed=False)                        # unparseable reply: accepted, no lesson
             return Reflection("correct", lesson=f"lesson {t['task_id']}", store=True)
-        rs = RunState(RemoConfig(mode="adaremo", K=2), self.d)
+        rs = RunState(RemoConfig(mode="autogovern", K=2), self.d)
         _run(tasks, rs, FakeSolver(), FakeCritic(fn))
         tf = _write_tasks(self.d, tasks)
         with open(os.path.join(self.d, "run_config.json"), "w") as f:
-            json.dump({"mode": "adaremo", "K": 2, "freeze_after": None}, f)
+            json.dump({"mode": "autogovern", "K": 2, "freeze_after": None}, f)
         res = write_final_results(self.d, tf, {"this_invocation": {"saved": 4}})
         self.assertTrue(os.path.exists(os.path.join(self.d, "final_results.json")))
         self.assertIsNone(res["accuracy"]); self.assertEqual((res["n_tasks"], res["n_saved"]), (4, 4))
@@ -390,7 +390,7 @@ class TestDriver(unittest.TestCase):
         self.assertEqual((res["mean_rounds"], res["extra_rounds_used"], res["critic_unparsed_rounds"]), (1.25, 1, 1))
         self.assertEqual(res["round1_clean_rate"], 0.75); self.assertEqual(res["final_clean_rate"], 0.75)
         self.assertEqual(res["memory_entries"], 2); self.assertGreater(res["memory_tokens_cl100k"] or 0, 0)
-        self.assertEqual(res["this_invocation"], {"saved": 4}); self.assertEqual(res["mode"], "adaremo")
+        self.assertEqual(res["this_invocation"], {"saved": 4}); self.assertEqual(res["mode"], "autogovern")
         base = summarize_run(tempfile.mkdtemp(), tf)                                  # empty run dir is fine
         self.assertEqual((base["n_saved"], base["mean_rounds"], base["round1_clean_rate"]), (0, None, None))
 

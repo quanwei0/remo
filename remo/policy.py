@@ -1,4 +1,4 @@
-"""Pure decision logic of Algorithms 1 (ReMo) and 2 (AdaReMo). No I/O, no LLM calls, so a
+"""Pure decision logic of Algorithms 1 (ReMo) and 2 (AutoGovern). No I/O, no LLM calls, so a
 benchmark harness with its own solve loop (e.g. FinanceGym) can drive it step by step.
 
 Per task:   after every round call `after_round` -> "accept" | "retry" | "stop"

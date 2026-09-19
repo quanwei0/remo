@@ -1,7 +1,7 @@
 [project]
 name = "remo"
 version = "0.1.0"
-description = "ReMo / AdaReMo: budgeted dual-timescale self-improvement for LLM agents (refinement + memory)"
+description = "ReMo / AutoGovern: budgeted dual-timescale self-improvement for LLM agents (refinement + memory)"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 dependencies = ["openai>=2.48,<4", "tiktoken>=0.13"]

@@ -1,4 +1,4 @@
-# benchmarks/financegym — ReMo / AdaReMo on FinanceGym (point-in-time finance research)
+# benchmarks/financegym — ReMo / AutoGovern on FinanceGym (point-in-time finance research)
 
 [FinanceGym](https://financegym.github.io): 400 open-ended finance research questions
 (`third_party/finance_harness/FinanceGym/data/benchmark_400_public.jsonl`: `task_id`, `question`, `cutoff`), each
@@ -43,14 +43,14 @@ corpus_pipeline/   rebuild of the point-in-time corpus (WARC list + scripts; see
   chars) and the injected playbook text (first 20 000 chars, `(empty)` if none). One user message,
   `max_tokens=2048`, **no temperature argument** — the critic runs at the server's default temperature, as in the
   submitted runs. Each round's critic call is independent (no earlier critique is shown).
-* **One prompt for both arms**: the ReMo arm saw exactly the same prompt as AdaReMo and simply ignored the
+* **One prompt for both arms**: the ReMo arm saw exactly the same prompt as AutoGovern and simply ignored the
   `refine` / `store` decisions; `confidence` is parsed and ignored.
 * Reply parsing (`common.parse_critic_reply`): greedy `{...}` + `json.loads`; `verdict` defaults to `no_errors`
   when missing, `refine` / `store` via `bool()`, text fields via `str()`. An unparseable reply is accepted without a
   lesson (`no_errors`, `refine=false`, `store=false`; counted as `parse_failures` / `critic_unparsed_rounds`). Only a
   failure of the call itself is a failed reflection: the episode stops, not admitted, no memory write.
 * Memory: the accepted episode's lesson (the last non-empty one across its rounds) is appended verbatim
-  (`lesson.strip()`, internal whitespace untouched) as `[fin-00013] helpful=1 <lesson>`; AdaReMo reinforces **one** entry — `cited_id` without brackets, else the first
+  (`lesson.strip()`, internal whitespace untouched) as `[fin-00013] helpful=1 <lesson>`; AutoGovern reinforces **one** entry — `cited_id` without brackets, else the first
   id mentioned in `novelty_reason` — and nothing (no write, no vote, no saturation bookkeeping) happens when the
   episode carries no lesson.
 * Rounds: an empty report is never retried (the critic still runs on it); retry rounds draw on one run-wide
@@ -131,13 +131,13 @@ python $RUN --mode baseline        --out ../../runs/financegym/baseline    # off
 python $RUN --mode refine  --K 3   --out ../../runs/financegym/refine_k3   # refinement only
 python $RUN --mode memory          --out ../../runs/financegym/memory      # memory only (K=1)
 python $RUN --mode remo    --K 3   --out ../../runs/financegym/remo_k3     # Algorithm 1 (the submitted ReMo run)
-python $RUN --mode adaremo --K 3   --out ../../runs/financegym/adaremo_k3  # Algorithm 2 (the submitted AdaReMo run)
-python $RUN --mode adaremo --K 3 --freeze-after 200 --out ../../runs/financegym/adaremo_freeze200   # learn-then-freeze
-python $RUN --mode adaremo --K 3 --limit 1 --conc 1 --out ../../runs/financegym/smoke                 # smoke (3-25 min: one task, one or two rounds)
+python $RUN --mode autogovern --K 3   --out ../../runs/financegym/autogovern_k3  # Algorithm 2 (the submitted AutoGovern run)
+python $RUN --mode autogovern --K 3 --freeze-after 200 --out ../../runs/financegym/autogovern_freeze200   # learn-then-freeze
+python $RUN --mode autogovern --K 3 --limit 1 --conc 1 --out ../../runs/financegym/smoke                 # smoke (3-25 min: one task, one or two rounds)
 ```
 
 Flags shared by every runner: `--mode`, `--K` (default 1 for baseline/memory, else 3), `--out`, `--limit N`
-(first N benchmark tasks), `--base-url`, `--model`, `--redundant-mode {reinforce,gate,off}` (AdaReMo: a lesson the
+(first N benchmark tasks), `--base-url`, `--model`, `--redundant-mode {reinforce,gate,off}` (AutoGovern: a lesson the
 critic judges covered gives `helpful+1` to the cited entry, no model call; `gate` discards it), `--freeze-after A`
 (consolidate on the first A tasks, then read-only memory; the read-only tasks wait until the A learning tasks have
 finished so they all see the same memory).
@@ -162,7 +162,7 @@ in the loop can leak it.
 
 **Concurrency semantics**: each task reads the playbook when it starts (after acquiring the semaphore), runs its ≤K
 solve/critic rounds concurrently with other tasks, and then — under the single lock — applies `gate` /
-`memory_decision` / playbook write and persists. `task_index` (benchmark position) drives the AdaReMo probe
+`memory_decision` / playbook write and persists. `task_index` (benchmark position) drives the AutoGovern probe
 schedule and the `--freeze-after` split, so both are independent of completion order.
 
 ## Outputs (RUN_DIR)

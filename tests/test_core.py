@@ -44,8 +44,8 @@ class TestPolicy(unittest.TestCase):
         a = ReMoAgent(RemoConfig(mode="remo", K=3), FakeSolver(), ScriptedCritic(BAD(refine=False)))
         self.assertEqual(len(a.run_task("t", 0)["rounds"]), 3)
 
-    def test_adaremo_critic_stop(self):
-        a = ReMoAgent(RemoConfig(mode="adaremo", K=3), FakeSolver(), ScriptedCritic(BAD(refine=False)))
+    def test_autogovern_critic_stop(self):
+        a = ReMoAgent(RemoConfig(mode="autogovern", K=3), FakeSolver(), ScriptedCritic(BAD(refine=False)))
         rec = a.run_task("t", 0)
         self.assertEqual(len(rec["rounds"]), 1); self.assertEqual(rec["gate"], "critic_stop")
 
@@ -74,7 +74,7 @@ class TestPolicy(unittest.TestCase):
                       .run_task("t", 0)["rounds"][0]["critique"])
 
     def test_critic_failure_stops_unadmitted(self):
-        a = ReMoAgent(RemoConfig(mode="adaremo", K=3), FakeSolver(), ScriptedCritic(Reflection("correct", failed=True)))
+        a = ReMoAgent(RemoConfig(mode="autogovern", K=3), FakeSolver(), ScriptedCritic(Reflection("correct", failed=True)))
         rec = a.run_task("t", 0)
         self.assertEqual((len(rec["rounds"]), rec["stop_reason"], rec["gate"], rec["store_decision"]), (1, "critic_error", "never_clean", "skipped"))
         self.assertEqual(a.policy.store_window, [])
@@ -91,8 +91,8 @@ class TestPolicy(unittest.TestCase):
         self.assertTrue(cons.episode.admitted); self.assertEqual(cons.episode.lesson(), "")
         self.assertEqual(len(a.playbook), 0)                     # AppendConsolidator would add nothing either
 
-    def test_adaremo_store_gate_and_reinforce(self):
-        cfg = RemoConfig(mode="adaremo", K=1, redundant_mode="reinforce")
+    def test_autogovern_store_gate_and_reinforce(self):
+        cfg = RemoConfig(mode="autogovern", K=1, redundant_mode="reinforce")
         a = ReMoAgent(cfg, FakeSolver(), ScriptedCritic(OK(lesson="use average equity")))
         a.run_task("t1", 0)
         eid = a.playbook.entries[0].id
@@ -103,7 +103,7 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(a.policy.store_window, [True, True])
 
     def test_reinforce_every_cited_entry_that_exists(self):
-        a = ReMoAgent(RemoConfig(mode="adaremo", K=1), FakeSolver(),
+        a = ReMoAgent(RemoConfig(mode="autogovern", K=1), FakeSolver(),
                       ScriptedCritic(Reflection("correct", lesson="dup", store=False, cited_id="[les-00002]",
                                                 novelty_reason="see [les-00001], [les-00002] and [les-00009]")))
         a.playbook.add("one"); a.playbook.add("two")
@@ -112,19 +112,19 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual([e.helpful for e in a.playbook.entries], [2, 2])
 
     def test_cited_entry_missing_is_discarded(self):
-        a = ReMoAgent(RemoConfig(mode="adaremo", K=1), FakeSolver(),
+        a = ReMoAgent(RemoConfig(mode="autogovern", K=1), FakeSolver(),
                       ScriptedCritic(Reflection("correct", lesson="dup", store=False, novelty_reason="[les-00007]")))
         rec = a.run_task("t", 0)
         self.assertEqual((rec["store_decision"], rec["entry_id"]), ("discarded", "")); self.assertEqual(a.policy.store_window, [False])
 
-    def test_adaremo_gate_mode_discards(self):
-        a = ReMoAgent(RemoConfig(mode="adaremo", K=1, redundant_mode="gate"), FakeSolver(),
+    def test_autogovern_gate_mode_discards(self):
+        a = ReMoAgent(RemoConfig(mode="autogovern", K=1, redundant_mode="gate"), FakeSolver(),
                       ScriptedCritic(Reflection("correct", lesson="dup", store=False, novelty_reason="[les-00001]")))
         a.playbook.add("existing")
         self.assertEqual(a.run_task("t", 0)["store_decision"], "discarded"); self.assertEqual(a.playbook.get("les-00001").helpful, 1)
 
     def test_freeze_and_probe(self):
-        cfg = RemoConfig(mode="adaremo", K=1, freeze_w=4, freeze_rho=0.5, probe_p=3, redundant_mode="gate")
+        cfg = RemoConfig(mode="autogovern", K=1, freeze_w=4, freeze_rho=0.5, probe_p=3, redundant_mode="gate")
         a = ReMoAgent(cfg, FakeSolver(), ScriptedCritic(Reflection("correct", lesson="x", store=False)))
         decisions = [a.run_task(f"t{i}", i)["store_decision"] for i in range(4)]   # 4 discards -> freeze
         self.assertTrue(a.policy.frozen); self.assertEqual(a.policy.freeze_events[0]["event"], "freeze")
@@ -153,7 +153,7 @@ class TestPlaybookPrefixKept(unittest.TestCase):
 
 
 class TestParsing(unittest.TestCase):
-    def test_parse_adaremo(self):
+    def test_parse_autogovern(self):
         r = parse_reflection('{"verdict":"no_errors","critique":"ok","refine":false,"store":false,'
                              '"novelty_reason":"covered by [les-00007]","lesson":"L"}', adaptive=True)
         self.assertTrue(r.correct); self.assertFalse(r.store); self.assertFalse(r.refine); self.assertEqual(r.lesson, "L")
@@ -207,7 +207,7 @@ class TestSectionedPlaybookInTheLoop(unittest.TestCase):
 
     def test_store_reinforce_and_resume(self):
         d = tempfile.mkdtemp()
-        cfg = RemoConfig(mode="adaremo", K=1)
+        cfg = RemoConfig(mode="autogovern", K=1)
         a = ReMoAgent(cfg, FakeSolver(), ScriptedCritic(OK(lesson="first")), SectionedPlaybook.from_skeleton("counts"),
                       self.AddConsolidator(), run_dir=d)
         rec = a.run_task("t1", 0)
@@ -269,7 +269,7 @@ class TestStructuralRedundancy(unittest.TestCase):
         self.assertEqual(r.top("completely unrelated words here", entries), [])
 
     def test_policy_structural_decisions(self):
-        cfg = RemoConfig(mode="adaremo", K=1, redundant_mode="structural")
+        cfg = RemoConfig(mode="autogovern", K=1, redundant_mode="structural")
         a = ReMoAgent(cfg, FakeSolver(), ScriptedCritic(OK(lesson="L", store=False)))   # the critic's store=False is ignored
         rec = a.run_task("t", 0)
         self.assertEqual(rec["store_decision"], "stored"); self.assertEqual(rec["redundancy"]["reason"], "no similar entry")
@@ -306,7 +306,7 @@ class TestStructuralRedundancy(unittest.TestCase):
     def test_agent_structural_reinforces_and_seed_never_covers(self):
         seed = _plain_pb("Always look at API specifications before calling an API.")
         seed_id = seed.ids()[0]
-        cfg = RemoConfig(mode="adaremo", K=1, redundant_mode="structural")
+        cfg = RemoConfig(mode="autogovern", K=1, redundant_mode="structural")
         critic = ScriptedCritic(OK(lesson="Always look at API specifications before calling an API.", store=False))
         a = ReMoAgent(cfg, FakeSolver(), critic, playbook=seed,
                       consolidator=type("C", (), {"consolidate": lambda self, pb, ep, task, traj: ",".join(pb.apply_add_ops(
